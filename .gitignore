@@ -1,0 +1,99 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+/data/
+*.db-shm
+*.db-wal
+
+# production
+/build
+
+# misc & certificates/keys
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+# IDE project identity (shared name and icon)
+.idea/*
+!.idea/.name
+!.idea/icon.png
+!.idea/icon.svg
+*.swp
+*.swo
+*~
+*.bak
+*.pem
+*.key
+*.crt
+*.cer
+*.csr
+*.der
+*.p8
+*.pk8
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.snk
+id_rsa*
+id_ed25519*
+*id_ecdsa*
+*id_dsa*
+*.token
+*.orig
+*.rej
+*.service
+*.db
+*.sqlite
+*.sqlite3
+*-journal
+dump.rdb
+*.rdb
+*.sql
+*.dump
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+.npmrc
+.yarnrc
+.pytest_cache/
+
+# debug & logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+config.json
+config.*.json
+miniclassisland_server.key*
+.env*
+*.env
+*.env.local
+*.env*.local
+!.env.example
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
