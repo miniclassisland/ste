@@ -548,6 +548,15 @@ pre {
   min-width: 110px;
 }
 
+.custom-fluent-dropdown-small,
+.custom-fluent-dropdown-small .fui-Dropdown__button {
+  min-height: 24px !important;
+  height: 24px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  box-sizing: border-box !important;
+}
+
 .fui-Dropdown__button {
   width: 100%;
   justify-content: space-between;

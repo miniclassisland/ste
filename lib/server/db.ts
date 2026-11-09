@@ -262,42 +262,88 @@ export function getDb(): DatabaseSync {
 
 export async function ensurePgpKeys(): Promise<{ privateKeyArmor: string; publicKeyArmor: string }> {
   const db = getDb();
-  const row = db
-    .prepare("SELECT pgp_private_key, pgp_public_key FROM system_config WHERE id = 1")
-    .get() as { pgp_private_key: string; pgp_public_key: string } | undefined;
+    const row = db
+      .prepare("SELECT pgp_private_key, pgp_public_key FROM system_config WHERE id = 1")
+      .get() as { pgp_private_key: string; pgp_public_key: string } | undefined;
 
-  if (row && row.pgp_private_key && row.pgp_public_key) {
+    if (row && row.pgp_private_key && row.pgp_public_key) {
+      return {
+        privateKeyArmor: row.pgp_private_key,
+        publicKeyArmor: row.pgp_public_key,
+      };
+    }
+
+    if (!store.pgpInitPromise) {
+      store.pgpInitPromise = (async () => {
+        const { privateKey, publicKey } = await openpgp.generateKey({
+          type: "rsa",
+          rsaBits: 2048,
+          userIDs: [{ name: "MINI ClassIsland Server", email: "msp@miniclassisland.local" }],
+          format: "armored",
+        });
+        db.prepare(`
+          UPDATE system_config
+          SET pgp_private_key = ?, pgp_public_key = ?, updated_at = ?
+          WHERE id = 1
+        `).run(privateKey, publicKey, new Date().toISOString());
+      })();
+    }
+
+    await store.pgpInitPromise;
+    const updated = db
+      .prepare("SELECT pgp_private_key, pgp_public_key FROM system_config WHERE id = 1")
+      .get() as { pgp_private_key: string; pgp_public_key: string };
     return {
-      privateKeyArmor: row.pgp_private_key,
-      publicKeyArmor: row.pgp_public_key,
+      privateKeyArmor: updated.pgp_private_key,
+      publicKeyArmor: updated.pgp_public_key,
     };
   }
 
-  if (!store.pgpInitPromise) {
-    store.pgpInitPromise = (async () => {
-      const { privateKey, publicKey } = await openpgp.generateKey({
-        type: "rsa",
-        rsaBits: 2048,
-        userIDs: [{ name: "CyreneMSP Server", email: "msp@classisland.local" }],
-        format: "armored",
-      });
-      db.prepare(`
-        UPDATE system_config
-        SET pgp_private_key = ?, pgp_public_key = ?, updated_at = ?
-        WHERE id = 1
-      `).run(privateKey, publicKey, new Date().toISOString());
-    })();
+  export async function signDetachedText(text: string): Promise<string> {
+    const { privateKeyArmor } = await ensurePgpKeys();
+    const privateKey = await openpgp.readPrivateKey({ armoredKey: privateKeyArmor });
+    const message = await openpgp.createMessage({ text });
+    const signature = await openpgp.sign({
+      message,
+      signingKeys: privateKey,
+      detached: true,
+      format: "armored",
+    });
+    return String(signature).trim();
   }
 
-  await store.pgpInitPromise;
-  const updated = db
-    .prepare("SELECT pgp_private_key, pgp_public_key FROM system_config WHERE id = 1")
-    .get() as { pgp_private_key: string; pgp_public_key: string };
-  return {
-    privateKeyArmor: updated.pgp_private_key,
-    publicKeyArmor: updated.pgp_public_key,
-  };
-}
+  export async function buildSignedCommandEnvelope(
+    requestGuid: string,
+    clientUid: string,
+    action: string,
+    payload?: Record<string, unknown> | null,
+    ttlSeconds = 300
+  ): Promise<string> {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const clampedTtl = Math.max(30, Math.min(Number(ttlSeconds || 300), 3600));
+    const expiresSec = nowSec + clampedTtl;
+    const payloadJson = JSON.stringify(payload || {});
+    const payloadHash = crypto
+      .createHash("sha256")
+      .update(payloadJson, "utf-8")
+      .digest("hex")
+      .toLowerCase();
+    const canonical =
+      `MCI-EXTCMD-V1|1|${requestGuid.trim()}|${clientUid.trim()}|` +
+      `${nowSec}|${expiresSec}|${action.trim().toLowerCase()}|${payloadHash}`;
+    const signature = await signDetachedText(canonical);
+    const envelopeObj = {
+      version: 1,
+      requestGuid: requestGuid.trim(),
+      clientUid: clientUid.trim(),
+      issuedAtUtc: nowSec,
+      expiresAtUtc: expiresSec,
+      action: action.trim().toLowerCase(),
+      payloadJson,
+      signature,
+    };
+    return JSON.stringify(envelopeObj);
+  }
 
 export async function decryptChallengeToken(armoredMessage: string): Promise<string> {
   const { privateKeyArmor } = await ensurePgpKeys();
@@ -1044,6 +1090,7 @@ export function renameClientDevice(
     nextId,
     clientUid
   );
+  pushClientCommand(clientUid, CommandTypes.DataUpdated, new Uint8Array());
   return { status: "updated", display_name: nextName, client_id: nextId };
 }
 
@@ -1190,6 +1237,90 @@ export function requestClientConfigSnapshot(
     request_guid: reqGuid,
     config_type: configType,
     config_type_name: CONFIG_TYPE_NAMES[configType] || `Unknown(${configType})`,
+  };
+}
+
+export async function sendExtendCommandToClient(
+  clientUid: string,
+  action: string,
+  payload?: Record<string, unknown> | null,
+  ttlSeconds = 300
+): Promise<{
+  status: string;
+  request_guid: string;
+  client_uid: string;
+  action: string;
+  config_type: number;
+  config_type_name: string;
+}> {
+  const db = getDb();
+  const cleanAction = (action || "").trim();
+  if (!cleanAction) {
+    throw new Error("action 不能为空");
+  }
+  const reqGuid = crypto.randomUUID();
+  const nowIso = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO config_uploads (request_guid, client_uid, config_type, payload, status, created_at)
+    VALUES (?, ?, 100, '', 'pending', ?)
+  `).run(reqGuid, clientUid, nowIso);
+
+  const signedEnvelopeGuid = await buildSignedCommandEnvelope(
+    reqGuid,
+    clientUid,
+    cleanAction,
+    payload || {},
+    ttlSeconds
+  );
+
+  const msg = create(GetClientConfigSchema, {
+    RequestGuid: signedEnvelopeGuid,
+    ConfigType: 100,
+  });
+  pushClientCommand(clientUid, CommandTypes.GetClientConfig, toBinary(GetClientConfigSchema, msg));
+
+  return {
+    status: "command_queued",
+    request_guid: reqGuid,
+    client_uid: clientUid,
+    action: cleanAction,
+    config_type: 100,
+    config_type_name: CONFIG_TYPE_NAMES[100] || "ExtendCommand",
+  };
+}
+
+export async function broadcastExtendCommandToClients(
+  action: string,
+  payload?: Record<string, unknown> | null,
+  targetClientUids?: string[],
+  ttlSeconds = 300
+): Promise<{
+  status: string;
+  action: string;
+  dispatched_count: number;
+  total_targets: number;
+  items: Array<{ client_uid: string; request_guid: string }>;
+}> {
+  const cleanAction = (action || "").trim();
+  if (!cleanAction) {
+    throw new Error("action 不能为空");
+  }
+  const targets =
+    targetClientUids && targetClientUids.length > 0
+      ? targetClientUids
+      : getOnlineClientUids();
+
+  const items: Array<{ client_uid: string; request_guid: string }> = [];
+  for (const uid of targets) {
+    const res = await sendExtendCommandToClient(uid, cleanAction, payload, ttlSeconds);
+    items.push({ client_uid: uid, request_guid: res.request_guid });
+  }
+  return {
+    status: "broadcast_queued",
+    action: cleanAction,
+    dispatched_count: items.length,
+    total_targets: targets.length,
+    items,
   };
 }
 
@@ -1612,6 +1743,7 @@ export function buildClientManifest(
     | {
         uid: string;
         client_id: string;
+        display_name: string;
         is_disabled: number;
       }
     | undefined;
@@ -1657,9 +1789,21 @@ export function buildClientManifest(
     }
   }
 
+  const rawDisplayName = (clientRow?.display_name || "").trim();
+  const rawClientId = (clientRow?.client_id || "").trim();
+  const effectiveDisplayName =
+    rawDisplayName && rawDisplayName !== clientUid
+      ? rawDisplayName
+      : rawClientId || "未命名设备";
+
   const response: Record<string, unknown> = {
     ServerKind: 1,
+    ServerFlavor: "miniclassisland-ste",
+    ServerSoftware: "MINI ClassIsland STE",
+    MiniClassIsland: true,
     OrganizationName: acct.name,
+    ClientDisplayName: effectiveDisplayName,
+    ClientIdentity: rawClientId,
   };
 
   for (const [rType, fieldName] of Object.entries(manifestFieldMap) as Array<
@@ -1848,7 +1992,7 @@ export async function handleGrpcClientRegister(
     `).run(
       clientUid,
       clientId,
-      clientId || clientUid,
+      clientId || "未命名设备",
       clientMac,
       clientIp,
       nowIso,
@@ -1900,7 +2044,7 @@ export async function handleGrpcClientRegister(
     `).run(
       clientUid,
       clientId,
-      clientId || clientUid,
+      clientId || "未命名设备",
       clientMac,
       clientIp,
       nowIso,
@@ -1931,7 +2075,7 @@ export async function handleGrpcClientRegister(
     `).run(crypto.randomUUID(), code, clientUid, clientId, clientMac, clientIp, nowIso);
     return {
       retcode: 10003, // PairingRequired
-      message: `PAIRING_CODE:${code}`,
+      message: `Device requires pairing code to join. Pairing Code: ${code}. Please contact admin for approval.`,
       serverPublicKey: "",
     };
   } else {
@@ -1942,7 +2086,7 @@ export async function handleGrpcClientRegister(
     `).run(clientId, clientMac, clientIp, existingCode.id);
     return {
       retcode: 10003, // PairingRequired
-      message: `PAIRING_CODE:${existingCode.code}`,
+      message: `Device requires pairing code to join. Pairing Code: ${existingCode.code}. Please contact admin for approval.`,
       serverPublicKey: "",
     };
   }
@@ -1961,6 +2105,180 @@ export function handleGrpcClientUnRegister(clientUid: string): {
   }
   deleteClientDevice(clientUid);
   return { retcode: 200, message: "Unregistered" };
+}
+
+export async function pollClientPairingStatus(
+  clientUid: string,
+  code = "",
+  classId = "",
+  mac = "",
+  clientIp = "127.0.0.1"
+): Promise<{
+  status: "approved" | "registered" | "rejected" | "pending";
+  approved: boolean;
+  registered: boolean;
+  code: string;
+  client_uid: string;
+  client_id: string;
+  serverPublicKey: string;
+  ServerFlavor: string;
+  server_flavor: string;
+}> {
+  const db = getDb();
+  const nowIso = new Date().toISOString();
+  const { publicKeyArmor } = await ensurePgpKeys();
+
+  const existingClient = db
+    .prepare("SELECT uid, client_id, is_disabled FROM clients WHERE uid = ?")
+    .get(clientUid) as { uid: string; client_id: string; is_disabled: number } | undefined;
+
+  if (existingClient) {
+    if (existingClient.is_disabled) {
+      return {
+        status: "rejected",
+        approved: false,
+        registered: false,
+        code: "",
+        client_uid: clientUid,
+        client_id: existingClient.client_id || classId,
+        serverPublicKey: "",
+        ServerFlavor: "miniclassisland-ste",
+        server_flavor: "miniclassisland-ste",
+      };
+    }
+    return {
+      status: "registered",
+      approved: true,
+      registered: true,
+      code: "",
+      client_uid: clientUid,
+      client_id: existingClient.client_id || classId,
+      serverPublicKey: publicKeyArmor,
+      ServerFlavor: "miniclassisland-ste",
+      server_flavor: "miniclassisland-ste",
+    };
+  }
+
+  let pcRow = db
+    .prepare("SELECT * FROM pairing_codes WHERE client_uid = ? ORDER BY created_at DESC LIMIT 1")
+    .get(clientUid) as
+    | {
+        id: string;
+        code: string;
+        client_uid: string;
+        client_id: string;
+        client_mac: string;
+        client_ip: string;
+        status: string;
+        approved: number;
+        used: number;
+        preset_profile: string;
+      }
+    | undefined;
+
+  if (!pcRow && code.trim()) {
+    pcRow = db
+      .prepare("SELECT * FROM pairing_codes WHERE code = ? ORDER BY created_at DESC LIMIT 1")
+      .get(code.trim()) as typeof pcRow;
+  }
+
+  if (pcRow) {
+    if (pcRow.status === "rejected") {
+      return {
+        status: "rejected",
+        approved: false,
+        registered: false,
+        code: pcRow.code,
+        client_uid: clientUid,
+        client_id: pcRow.client_id || classId,
+        serverPublicKey: "",
+        ServerFlavor: "miniclassisland-ste",
+        server_flavor: "miniclassisland-ste",
+      };
+    }
+    if (pcRow.approved || pcRow.status === "approved" || pcRow.used) {
+      const effectiveClassId = classId.trim() || pcRow.client_id || "";
+      const effectiveMac = mac.trim() || pcRow.client_mac || "";
+      const effectiveIp = clientIp || pcRow.client_ip || "127.0.0.1";
+      db.prepare("UPDATE pairing_codes SET used = 1, status = 'used' WHERE id = ?").run(pcRow.id);
+      db.prepare(`
+        INSERT OR REPLACE INTO clients (uid, client_id, display_name, mac, ip, is_disabled, registered_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+      `).run(
+        clientUid,
+        effectiveClassId,
+        effectiveClassId || "未命名设备",
+        effectiveMac,
+        effectiveIp,
+        nowIso,
+        nowIso
+      );
+      try {
+        const preset = JSON.parse(pcRow.preset_profile || "{}") as ClientProfileConfig;
+        if (preset && Object.keys(preset).length > 0) {
+          upsertClientProfile(clientUid, preset);
+        }
+      } catch {
+        // Ignore
+      }
+      return {
+        status: "approved",
+        approved: true,
+        registered: true,
+        code: pcRow.code,
+        client_uid: clientUid,
+        client_id: effectiveClassId,
+        serverPublicKey: publicKeyArmor,
+        ServerFlavor: "miniclassisland-ste",
+        server_flavor: "miniclassisland-ste",
+      };
+    }
+    return {
+      status: "pending",
+      approved: false,
+      registered: false,
+      code: pcRow.code,
+      client_uid: clientUid,
+      client_id: pcRow.client_id || classId,
+      serverPublicKey: "",
+      ServerFlavor: "miniclassisland-ste",
+      server_flavor: "miniclassisland-ste",
+    };
+  }
+
+  const mode = getPairingStatus().registration_mode;
+  if (mode === "pairing") {
+    const newCode = String(Math.floor(100000 + Math.random() * 900000));
+    db.prepare(`
+      INSERT INTO pairing_codes (
+        id, code, client_uid, client_id, client_mac, client_ip,
+        status, approved, used, preset_profile, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 0, '{}', ?)
+    `).run(crypto.randomUUID(), newCode, clientUid, classId, mac, clientIp, nowIso);
+    return {
+      status: "pending",
+      approved: false,
+      registered: false,
+      code: newCode,
+      client_uid: clientUid,
+      client_id: classId,
+      serverPublicKey: "",
+      ServerFlavor: "miniclassisland-ste",
+      server_flavor: "miniclassisland-ste",
+    };
+  }
+
+  return {
+    status: "pending",
+    approved: false,
+    registered: false,
+    code: code.trim(),
+    client_uid: clientUid,
+    client_id: classId,
+    serverPublicKey: "",
+    ServerFlavor: "miniclassisland-ste",
+    server_flavor: "miniclassisland-ste",
+  };
 }
 
 export { encodeClassIslandCredential };

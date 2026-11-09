@@ -1256,7 +1256,48 @@ export const CONFIG_TYPE_LABELS: Record<number, string> = {
     4: "自动化配置",
     5: "运行日志",
     6: "已安装插件",
+    100: "集控增强指令",
 };
+
+export interface ExtendCommandDispatchResult {
+    status: string;
+    delivered: boolean;
+    message?: string;
+    request_guid: string;
+    action: string;
+    config_type?: number;
+    config_type_name?: string;
+}
+
+export interface ExtendCommandBroadcastResult {
+    status: string;
+    action: string;
+    sent_count: number;
+    delivered_count?: number;
+    dispatched_count?: number;
+    total_targets: number;
+    requests: Array<{
+        client_uid: string;
+        request_guid: string;
+        delivered: boolean;
+    }>;
+}
+
+export interface CommandExecutionEnvelope {
+    requestGuid?: string;
+    clientUid?: string;
+    action?: string;
+    status?: string;
+    success?: boolean;
+    ok?: boolean;
+    code?: string;
+    message?: string | null;
+    errorMessage?: string | null;
+    respondedAtUtc?: number;
+    completedAtUtc?: number;
+    data?: unknown;
+    integritySha256?: string;
+}
 
 export interface ConfigUploadItem {
     request_guid: string;

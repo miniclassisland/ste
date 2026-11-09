@@ -116,7 +116,7 @@ export function Select({
             aria-label={ariaLabel || title || placeholder || "下拉选择"}
             size={size}
             disabled={disabled}
-            className={`custom-fluent-dropdown ${className || ""}`.trim()}
+            className={`custom-fluent-dropdown custom-fluent-dropdown-${size} ${className || ""}`.trim()}
             style={mergedStyle}
             value={displayValue}
             selectedOptions={[currentVal]}

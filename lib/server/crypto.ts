@@ -281,6 +281,7 @@ export const CONFIG_TYPE_NAMES: Record<number, string> = {
   4: "CurrentAutomation",
   5: "Logs",
   6: "PluginList",
+  100: "ExtendCommand",
 };
 
 export const DEFAULT_RESOURCES: Record<string, unknown> = {

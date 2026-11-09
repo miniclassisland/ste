@@ -17,11 +17,20 @@ export async function GET(
 
     touchClientLastSeen(client_uid, clientIp);
     const manifest = buildClientManifest(client_uid, clientIp, originUrl);
-    return NextResponse.json(manifest);
+    return NextResponse.json(manifest, {
+      headers: {
+        "X-MiniClassIsland-Server": "ste",
+      },
+    });
   } catch (err) {
     return NextResponse.json(
       { detail: err instanceof Error ? err.message : "Failed to build manifest" },
-      { status: 403 }
+      {
+        status: 403,
+        headers: {
+          "X-MiniClassIsland-Server": "ste",
+        },
+      }
     );
   }
 }

@@ -169,7 +169,7 @@ export default function PairingPage() {
                 <div className="flex items-center justify-between" style={{ gap: 16, flexWrap: "wrap" }}>
                     <div style={{ flex: 1 }}>
                         <p style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                            决定新 ClassIsland 客户端首次连接本账户 gRPC 注册服务时的准入规则。无论选择何种模式，只要设备已在「预注册客户端」白名单中匹配（班级标识或物理 MAC），均可直接放行并自动绑定预设档案。
+                            决定新终端首次连接本账户时的准入规则。无论选择何种模式，只要设备已在预注册客户端白名单中匹配班级标识或物理网卡地址，均可直接放行并自动绑定预设档案。
                         </p>
                     </div>
                     <div className="flex items-center gap-8">
@@ -202,8 +202,8 @@ export default function PairingPage() {
                             <tr>
                                 <th>6位配对码</th>
                                 <th>请求班级标识</th>
-                                <th>客户端 UID</th>
-                                <th>物理 MAC / IP</th>
+                                <th>设备标识码</th>
+                                <th>网络地址</th>
                                 <th>状态</th>
                                 <th>请求时间</th>
                                 <th>操作</th>
@@ -220,8 +220,8 @@ export default function PairingPage() {
                                     <td style={{ fontWeight: 500 }}>{c.client_id || "-"}</td>
                                     <td style={{ fontSize: 12, color: "var(--text-secondary)" }}>{c.client_uid || "-"}</td>
                                     <td style={{ fontSize: 12 }}>
-                                        <div>MAC: {c.client_mac || "-"}</div>
-                                        <div style={{ color: "var(--text-secondary)" }}>IP: {c.client_ip || "-"}</div>
+                                        <div>物理地址: {c.client_mac || "-"}</div>
+                                        <div style={{ color: "var(--text-secondary)" }}>网络地址: {c.client_ip || "-"}</div>
                                     </td>
                                     <td>
                                         {c.status === "rejected" ? (
@@ -277,7 +277,7 @@ export default function PairingPage() {
                             <DialogTitle>批准配对请求 — 配对码 {approvingItem.code}</DialogTitle>
                             <DialogContent>
                                 <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16 }}>
-                                    批准客户端 <strong>{approvingItem.client_id || approvingItem.client_uid}</strong> 接入。您可在此预先为其指定专属档案（留空则默认继承账户全局配置）：
+                                    批准客户端 <strong>{approvingItem.client_id || approvingItem.client_uid}</strong> 接入。您可在此预先为其指定专属档案，留空则默认继承账户全局配置：
                                 </p>
                                 <div className="grid-2">
                                     {RESOURCE_TYPES.map((rt) => (

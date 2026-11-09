@@ -62,6 +62,8 @@ import {
   broadcastNotificationToClients,
   batchClientsAction,
   requestClientConfigSnapshot,
+  sendExtendCommandToClient,
+  broadcastExtendCommandToClients,
   listClientConfigUploads,
   getClientConfigUploadDetail,
   getPairingStatus,
@@ -307,6 +309,20 @@ export async function dispatchManagementAction(
       return requestClientConfigSnapshot(
         String(payload.client_uid),
         Number(payload.config_type)
+      );
+    case "clients.sendExtendCommand":
+      return await sendExtendCommandToClient(
+        String(payload.client_uid),
+        String(payload.action),
+        (payload.payload as Record<string, unknown> | undefined) || {},
+        Number(payload.ttl_seconds || 300)
+      );
+    case "clients.broadcastExtendCommand":
+      return await broadcastExtendCommandToClients(
+        String(payload.action),
+        (payload.payload as Record<string, unknown> | undefined) || {},
+        payload.target_client_uids as string[] | undefined,
+        Number(payload.ttl_seconds || 300)
       );
     case "clients.listConfigUploads":
       return listClientConfigUploads(String(payload.client_uid));

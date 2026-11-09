@@ -14,6 +14,8 @@ import type {
   ClientProfileConfig,
   ClientDeviceOut,
   ConfigUploadItem,
+  ExtendCommandDispatchResult,
+  ExtendCommandBroadcastResult,
   AuditLogItem,
   RegistrationMode,
   ResourceHistoryItem,
@@ -416,6 +418,34 @@ export const clients = {
     }>("clients.getConfig", {
       client_uid: clientUid,
       config_type: configType,
+    }),
+
+  sendExtendCommand: (
+    _accountId: string,
+    clientUid: string,
+    action: string,
+    payload?: Record<string, unknown>,
+    ttlSeconds = 300
+  ) =>
+    callAction<ExtendCommandDispatchResult>("clients.sendExtendCommand", {
+      client_uid: clientUid,
+      action,
+      payload: payload || {},
+      ttl_seconds: ttlSeconds,
+    }),
+
+  broadcastExtendCommand: (
+    _accountId: string,
+    action: string,
+    payload?: Record<string, unknown>,
+    targetClientUids?: string[],
+    ttlSeconds = 300
+  ) =>
+    callAction<ExtendCommandBroadcastResult>("clients.broadcastExtendCommand", {
+      action,
+      payload: payload || {},
+      target_client_uids: targetClientUids,
+      ttl_seconds: ttlSeconds,
     }),
 
   listConfigUploads: (_accountId: string, clientUid: string) =>
