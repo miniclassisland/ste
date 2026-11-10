@@ -6,11 +6,13 @@ import { useAccount } from "@/lib/account-context";
 import type { ManagementPolicy } from "@/lib/types";
 import {
     Button, Switch, Spinner,
-    MessageBar, MessageBarBody,
     Dialog, DialogSurface, DialogBody, DialogTitle, DialogContent, DialogActions, Input,
 } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
+import { ConfirmPopover } from "@/components/ConfirmPopover";
 import {
     Add24Regular, Delete24Regular, Save24Regular, ArrowSync24Regular, Code24Regular,
+    ArrowLeft24Regular,
 } from "@fluentui/react-icons";
 import DownloadPresetPopoverButton from "@/components/DownloadPresetPopoverButton";
 import FileHistoryButton from "@/components/FileHistoryButton";
@@ -19,7 +21,7 @@ const POLICY_FIELDS: { key: keyof ManagementPolicy; label: string; hint: string 
     { key: "DisableProfileClassPlanEditing", label: "禁止编辑课表", hint: "阻止客户端本地用户修改课表与临时换课" },
     { key: "DisableProfileTimeLayoutEditing", label: "禁止编辑时间表", hint: "阻止客户端本地用户修改时间表节点" },
     { key: "DisableProfileSubjectsEditing", label: "禁止编辑科目", hint: "阻止客户端本地用户增删改科目列表" },
-    { key: "DisableProfileEditing", label: "禁止编辑全部档案", hint: "完全锁定客户端档案编辑器" },
+    { key: "DisableProfileEditing", label: "禁止编辑全部档案", hint: "锁定客户端档案编辑器" },
     { key: "DisableSettingsEditing", label: "禁止修改应用设置", hint: "阻止客户端本地用户修改应用设置页面" },
     { key: "DisableSplashCustomize", label: "禁止自定义启动画面", hint: "阻止客户端本地用户修改启动图与标语" },
     { key: "DisableDebugMenu", label: "禁止使用调试菜单", hint: "隐藏客户端开发者调试入口" },
@@ -40,10 +42,12 @@ export default function PolicyPage() {
     const [msg, setMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
     const [showCreate, setShowCreate] = useState(false);
     const [newFileName, setNewFileName] = useState("");
+    const [mobileLayer, setMobileLayer] = useState<1 | 2>(1);
 
-    const selectFile = useCallback(async (name: string) => {
+    const selectFile = useCallback(async (name: string, enterMobileEditor = false) => {
         if (!accountId) return;
         setSelectedFile(name);
+        if (enterMobileEditor) setMobileLayer(2);
         setDataLoading(true);
         setMsg(null);
         try {
@@ -59,20 +63,23 @@ export default function PolicyPage() {
     }, [accountId]);
 
     const loadFiles = useCallback(async () => {
+        if (!accountId) {
+            setLoading(false);
+            return;
+        }
         setLoading(true);
-        if (!accountId) return;
         try {
             const list = await data.list(accountId, "Policy");
             const arr = Array.isArray(list) ? list : [];
             setFileList(arr);
-            if (arr.length > 0 && !selectedFile) {
+            if (arr.length > 0 && (!selectedFile || !arr.includes(selectedFile))) {
                 selectFile(arr[0]);
             }
         } catch {
             setFileList([]);
         }
         setLoading(false);
-    }, [accountId, selectedFile, selectFile]);
+    }, [accountId, selectFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         loadFiles();
@@ -91,7 +98,7 @@ export default function PolicyPage() {
                 setJsonText(JSON.stringify(policy, null, 2));
             }
             await data.write(accountId, "Policy", selectedFile, payload);
-            setMsg({ type: "success", text: "策略配置已保存并递增版本号" });
+            setMsg({ type: "success", text: "策略配置已保存" });
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "保存失败" });
         }
@@ -107,17 +114,19 @@ export default function PolicyPage() {
             setShowCreate(false);
             setNewFileName("");
             await loadFiles();
-            selectFile(name);
+            selectFile(name, true);
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "创建失败" });
         }
     }
 
     async function handleDeleteFile(name: string) {
-        if (!confirm(`确定删除 "${name}"？`)) return;
         try {
             await data.deleteData(accountId, "Policy", name);
-            if (selectedFile === name) setSelectedFile(null);
+            if (selectedFile === name) {
+                setSelectedFile(null);
+                setMobileLayer(1);
+            }
             await loadFiles();
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "删除失败" });
@@ -144,43 +153,62 @@ export default function PolicyPage() {
             )}
 
             <div className="profile-split-layout">
-                <div className="profile-split-sidebar">
+                <div className={`profile-split-sidebar ${mobileLayer !== 1 ? "mobile-layer-hidden" : ""}`}>
                     <div className="card">
                         <div className="card-title">策略文件</div>
                         {loading ? (
                             <Spinner size="small" />
+                        ) : fileList.length === 0 ? (
+                            <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>暂无文件</div>
                         ) : (
-                            fileList.map((f) => (
-                                <div
-                                    key={f}
-                                    className={`sidebar-link ${selectedFile === f ? "active" : ""}`}
-                                    onClick={() => selectFile(f)}
-                                >
-                                    <span style={{ flex: 1 }}>{f}</span>
-                                    <Button
-                                        appearance="subtle"
-                                        size="small"
-                                        icon={<Delete24Regular />}
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleDeleteFile(f);
-                                        }}
-                                        style={{ color: "var(--danger-color)", minWidth: 24, padding: 2 }}
-                                    />
-                                </div>
-                            ))
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                {fileList.map((f) => (
+                                    <div
+                                        key={f}
+                                        className={`sidebar-link ${selectedFile === f ? "active" : ""}`}
+                                        onClick={() => selectFile(f, true)}
+                                    >
+                                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{f}</span>
+                                        <ConfirmPopover
+                                            message={`确定删除 "${f}"？`}
+                                            onConfirm={() => handleDeleteFile(f)}
+                                            confirmText="删除"
+                                        >
+                                            <Button
+                                                appearance="subtle"
+                                                size="small"
+                                                icon={<Delete24Regular />}
+                                                style={{ color: "var(--danger-color)" }}
+                                            />
+                                        </ConfirmPopover>
+                                    </div>
+                                ))}
+                            </div>
                         )}
                     </div>
                 </div>
 
-                <div style={{ flex: 1 }}>
+                <div className={mobileLayer === 1 ? "mobile-layer-hidden" : ""} style={{ flex: 1, minWidth: 0 }}>
+                    <div className="mobile-only-nav-bar" style={{ marginBottom: 12 }}>
+                        <Button
+                            size="small"
+                            appearance="subtle"
+                            icon={<ArrowLeft24Regular />}
+                            onClick={() => setMobileLayer(1)}
+                        >
+                            返回文件列表
+                        </Button>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{selectedFile || "编辑策略"}</span>
+                        <span />
+                    </div>
+
                     {!selectedFile ? (
                         <div className="card"><div className="empty-state"><div className="empty-state-text">请选择策略文件</div></div></div>
                     ) : dataLoading ? (
                         <div className="card"><div className="empty-state"><Spinner size="medium" /></div></div>
                     ) : (
                         <div className="card">
-                            <div className="flex items-center justify-between mb-16">
+                            <div className="flex items-center justify-between mb-16" style={{ flexWrap: "wrap", gap: 8 }}>
                                 <div className="card-title" style={{ margin: 0 }}>编辑策略: {selectedFile}</div>
                                 <div className="flex gap-8" style={{ flexWrap: "wrap" }}>
                                     <FileHistoryButton
@@ -195,13 +223,13 @@ export default function PolicyPage() {
                                                 type: "success",
                                                 text: isCurrent
                                                     ? `已加载当前最新版本 v${version}`
-                                                    : `已加载历史版本 v${version} 到编辑器（点击「保存」将创建一个新版本，不会覆盖历史版本）`,
+                                                    : `已加载历史版本 v${version} 到编辑器`,
                                             });
                                         }}
                                         onError={(text) => setMsg({ type: "error", text })}
                                     />
                                     <DownloadPresetPopoverButton
-                                        buttonText="导出 JSON"
+                                        buttonText="导出"
                                         appearance="secondary"
                                         defaultFileName={`Policy-${selectedFile}.json`}
                                         suggestedNames={[
@@ -269,7 +297,7 @@ export default function PolicyPage() {
                                     <Input
                                         value={newFileName}
                                         onChange={(_, d) => setNewFileName(d.value)}
-                                        placeholder="如 default"
+                                        placeholder="输入文件名称"
                                         style={{ width: "100%" }}
                                     />
                                 </div>

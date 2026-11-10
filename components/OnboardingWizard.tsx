@@ -14,9 +14,8 @@ import {
   Button,
   Input,
   Spinner,
-  MessageBar,
-  MessageBarBody,
 } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
 import {
   ArrowUpload24Regular,
   ArrowDownload24Regular,
@@ -458,7 +457,7 @@ export default function OnboardingWizard({
                   <Input
                     value={presetClassIdentity}
                     onChange={(_, d) => setPresetClassIdentity(d.value)}
-                    placeholder={`例如：高一1班（留空则生成通用引导文件）`}
+                    placeholder="输入预设班级标识，留空生成通用引导文件"
                     style={{ width: "100%" }}
                   />
                   <div className="form-hint">

@@ -74,6 +74,18 @@ interface GlobalStore {
       expiresAt: number;
     }
   >;
+  extendEnabledClients: Map<
+    string,
+    {
+      enabled: boolean;
+      version: string;
+      isAppLocked?: boolean;
+      pluginSettings?: unknown;
+      pluginComponents?: unknown;
+      hardwareInfo?: Record<string, unknown> | null;
+      updatedAt: number;
+    }
+  >;
 }
 
 const g = globalThis as unknown as { __miniclassisland_ste_store?: GlobalStore };
@@ -84,9 +96,57 @@ if (!g.__miniclassisland_ste_store) {
     pendingHandshakes: new Map(),
     grpcSessions: new Map(),
     downloadTokens: new Map(),
+    extendEnabledClients: new Map(),
   };
 }
+if (!g.__miniclassisland_ste_store.extendEnabledClients) {
+  g.__miniclassisland_ste_store.extendEnabledClients = new Map();
+}
 const store = g.__miniclassisland_ste_store;
+
+export function markClientExtendEnabled(
+  clientUid: string,
+  version = "",
+  extra?: {
+    isAppLocked?: boolean;
+    pluginSettings?: unknown;
+    pluginComponents?: unknown;
+    hardwareInfo?: Record<string, unknown> | null;
+  }
+): void {
+  const uid = (clientUid || "").trim();
+  if (!uid) return;
+  const prev = store.extendEnabledClients.get(uid);
+  store.extendEnabledClients.set(uid, {
+    enabled: true,
+    version: (version || prev?.version || "2.0.0.3").trim(),
+    isAppLocked: extra?.isAppLocked !== undefined ? extra.isAppLocked : prev?.isAppLocked,
+    pluginSettings: extra?.pluginSettings !== undefined ? extra.pluginSettings : prev?.pluginSettings,
+    pluginComponents: extra?.pluginComponents !== undefined ? extra.pluginComponents : prev?.pluginComponents,
+    hardwareInfo: extra?.hardwareInfo !== undefined ? extra.hardwareInfo : prev?.hardwareInfo,
+    updatedAt: Date.now(),
+  });
+}
+
+export function getClientExtendStatus(clientUid: string): {
+  enabled: boolean;
+  version: string;
+  isAppLocked: boolean;
+  pluginSettings?: unknown;
+  pluginComponents?: unknown;
+  hardwareInfo?: Record<string, unknown> | null;
+} {
+  const uid = (clientUid || "").trim();
+  const info = uid ? store.extendEnabledClients.get(uid) : undefined;
+  return {
+    enabled: Boolean(info?.enabled),
+    version: info?.version || "",
+    isAppLocked: Boolean(info?.isAppLocked),
+    pluginSettings: info?.pluginSettings,
+    pluginComponents: info?.pluginComponents,
+    hardwareInfo: info?.hardwareInfo,
+  };
+}
 
 export function getDb(): DatabaseSync {
   if (store.db) return store.db;
@@ -260,6 +320,17 @@ export function getDb(): DatabaseSync {
   return db;
 }
 
+export function decorateStePublicKeyArmor(armor: string): string {
+  if (!armor) return "";
+  if (armor.includes("MINI ClassIsland STE") || armor.includes("miniclassisland-ste")) {
+    return armor;
+  }
+  return armor.replace(
+    /-----BEGIN PGP PUBLIC KEY BLOCK-----(\r?\n)/,
+    "-----BEGIN PGP PUBLIC KEY BLOCK-----$1Comment: MINI ClassIsland STE (miniclassisland-ste)$1"
+  );
+}
+
 export async function ensurePgpKeys(): Promise<{ privateKeyArmor: string; publicKeyArmor: string }> {
   const db = getDb();
     const row = db
@@ -269,7 +340,7 @@ export async function ensurePgpKeys(): Promise<{ privateKeyArmor: string; public
     if (row && row.pgp_private_key && row.pgp_public_key) {
       return {
         privateKeyArmor: row.pgp_private_key,
-        publicKeyArmor: row.pgp_public_key,
+        publicKeyArmor: decorateStePublicKeyArmor(row.pgp_public_key),
       };
     }
 
@@ -278,14 +349,15 @@ export async function ensurePgpKeys(): Promise<{ privateKeyArmor: string; public
         const { privateKey, publicKey } = await openpgp.generateKey({
           type: "rsa",
           rsaBits: 2048,
-          userIDs: [{ name: "MINI ClassIsland Server", email: "msp@miniclassisland.local" }],
+          userIDs: [{ name: "MINI ClassIsland STE Server", comment: "miniclassisland-ste", email: "ste@miniclassisland.local" }],
           format: "armored",
         });
+        const decoratedPub = decorateStePublicKeyArmor(publicKey);
         db.prepare(`
           UPDATE system_config
           SET pgp_private_key = ?, pgp_public_key = ?, updated_at = ?
           WHERE id = 1
-        `).run(privateKey, publicKey, new Date().toISOString());
+        `).run(privateKey, decoratedPub, new Date().toISOString());
       })();
     }
 
@@ -295,7 +367,7 @@ export async function ensurePgpKeys(): Promise<{ privateKeyArmor: string; public
       .get() as { pgp_private_key: string; pgp_public_key: string };
     return {
       privateKeyArmor: updated.pgp_private_key,
-      publicKeyArmor: updated.pgp_public_key,
+      publicKeyArmor: decorateStePublicKeyArmor(updated.pgp_public_key),
     };
   }
 
@@ -534,6 +606,9 @@ export function buildManagementPreset(
     ManagementServerGrpc: baseUrl,
     ManifestUrlTemplate: `${baseUrl}/api/v1/client/{id}/manifest`,
     ClassIdentity: classIdentity ?? "",
+    ServerFlavor: "miniclassisland-ste",
+    ServerSoftware: "MINI ClassIsland STE",
+    MiniClassIsland: true,
   };
 }
 
@@ -982,6 +1057,7 @@ export function listClients(): ClientDeviceOut[] {
       profileMap.get(c.uid) || (c.client_id ? profileMap.get(c.client_id) : undefined);
     const effective = customProfile || defaultProfile;
     const online = isClientOnline(c.uid);
+    const ext = getClientExtendStatus(c.uid);
     return {
       uid: c.uid,
       client_id: c.client_id || "",
@@ -989,7 +1065,13 @@ export function listClients(): ClientDeviceOut[] {
       mac: c.mac || "",
       ip: c.ip || "",
       is_disabled: Boolean(c.is_disabled),
+      is_app_locked: ext.isAppLocked,
       status: online ? "online" : "offline",
+      extend_management_enabled: ext.enabled,
+      extend_management_version: ext.version,
+      plugin_settings: ext.pluginSettings,
+      plugin_components: ext.pluginComponents,
+      hardware_info: ext.hardwareInfo,
       registered_at: c.registered_at,
       last_seen_at: c.last_seen_at,
       profile_config: profileRowToDict(effective),
@@ -1107,18 +1189,39 @@ export function enableClientDevice(clientUid: string): { status: string } {
   return { status: "enabled" };
 }
 
-export function deleteClientDevice(clientUid: string): { status: string } {
+export async function deleteClientDevice(
+  clientUid: string,
+  notifyExit = true
+): Promise<{ status: string }> {
   const db = getDb();
   const row = db
     .prepare("SELECT uid, client_id FROM clients WHERE uid = ?")
     .get(clientUid) as { uid: string; client_id: string } | undefined;
   if (!row) throw new Error("客户端不存在");
 
+  if (notifyExit && isClientOnline(clientUid)) {
+    try {
+      await sendExtendCommandToClient(
+        clientUid,
+        "management.exit",
+        { reason: "removed_by_server" },
+        120
+      );
+      await new Promise((r) => setTimeout(r, 120));
+    } catch {
+      // Ignore stream push error
+    }
+  }
+
+  db.prepare("UPDATE pre_registered_clients SET bound_client_uid = '' WHERE bound_client_uid = ?").run(
+    clientUid
+  );
   db.prepare("DELETE FROM client_profiles WHERE client_id = ?").run(clientUid);
   if (row.client_id) {
     db.prepare("DELETE FROM client_profiles WHERE client_id = ?").run(row.client_id);
   }
   db.prepare("DELETE FROM clients WHERE uid = ?").run(clientUid);
+  store.extendEnabledClients.delete(clientUid);
   disconnectClientSession(clientUid);
   return { status: "deleted" };
 }
@@ -1173,11 +1276,89 @@ export function broadcastNotificationToClients(
   };
 }
 
-export function batchClientsAction(body: {
+export async function setClientAppLock(
+  clientUid: string,
+  locked: boolean
+): Promise<{ status: string; delivered: boolean; is_app_locked: boolean; message: string }> {
+  markClientExtendEnabled(clientUid, "", { isAppLocked: locked });
+  let delivered = false;
+  if (isClientOnline(clientUid)) {
+    try {
+      await sendExtendCommandToClient(
+        clientUid,
+        "security.set_app_lock",
+        { isLocked: locked },
+        120
+      );
+      delivered = true;
+    } catch {
+      delivered = false;
+    }
+  }
+  return {
+    status: "ok",
+    delivered,
+    is_app_locked: locked,
+    message: locked ? "客户端已锁定" : "客户端已解锁",
+  };
+}
+
+export function getAggregatedPluginComponents(): {
+  totalCount: number;
+  components: Array<Record<string, unknown>>;
+} {
+  const seen = new Set<string>();
+  const items: Array<Record<string, unknown>> = [];
+  for (const client of listClients()) {
+    const raw = client.plugin_components;
+    let list: unknown[] = [];
+    if (Array.isArray(raw)) {
+      list = raw;
+    } else if (raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).components)) {
+      list = (raw as Record<string, unknown>).components as unknown[];
+    }
+    for (const entry of list) {
+      if (!entry || typeof entry !== "object") continue;
+      const obj = entry as Record<string, unknown>;
+      const id = String(obj.id || obj.Id || "").trim();
+      if (!id || seen.has(id.toLowerCase())) continue;
+      seen.add(id.toLowerCase());
+      items.push({
+        id,
+        name: String(obj.name || obj.Name || id),
+        description: obj.description ?? obj.Description ?? null,
+        iconGlyph: obj.iconGlyph ?? obj.IconGlyph ?? null,
+        isComponentContainer: Boolean(obj.isComponentContainer ?? obj.IsComponentContainer),
+        hasSettingsControl: Boolean(obj.hasSettingsControl ?? obj.HasSettingsControl),
+        componentTypeName: obj.componentTypeName ?? obj.ComponentTypeName ?? null,
+        settingsTypeName: obj.settingsTypeName ?? obj.SettingsTypeName ?? null,
+        assemblyName: obj.assemblyName ?? obj.AssemblyName ?? null,
+        isBuiltIn: Boolean(obj.isBuiltIn ?? obj.IsBuiltIn),
+        sourceClientUid: client.uid,
+        sourceClientName: client.display_name || client.client_id || client.uid,
+      });
+    }
+  }
+  return { totalCount: items.length, components: items };
+}
+
+export async function batchClientsAction(body: {
   client_uids: string[];
-  action: "force_sync" | "restart" | "disconnect" | "enable" | "disable" | "delete" | "assign_profile";
+  action:
+    | "force_sync"
+    | "restart"
+    | "disconnect"
+    | "enable"
+    | "disable"
+    | "delete"
+    | "remove"
+    | "lock"
+    | "unlock"
+    | "send_notification"
+    | "assign_profile";
   profile_config?: ClientProfileConfig;
-}): { status: string; affected: number } {
+  notification?: NotificationPayload | null;
+}): Promise<{ status: string; affected: number }> {
   let affected = 0;
   for (const uid of body.client_uids) {
     if (body.action === "force_sync") {
@@ -1195,13 +1376,22 @@ export function batchClientsAction(body: {
     } else if (body.action === "disable") {
       disableClientDevice(uid);
       affected++;
-    } else if (body.action === "delete") {
+    } else if (body.action === "delete" || body.action === "remove") {
       try {
-        deleteClientDevice(uid);
+        await deleteClientDevice(uid);
         affected++;
       } catch {
         // Ignore missing
       }
+    } else if (body.action === "lock") {
+      await setClientAppLock(uid, true);
+      affected++;
+    } else if (body.action === "unlock") {
+      await setClientAppLock(uid, false);
+      affected++;
+    } else if (body.action === "send_notification" && body.notification) {
+      sendNotificationToClient(uid, body.notification);
+      affected++;
     } else if (body.action === "assign_profile" && body.profile_config) {
       setClientProfileConfig(uid, body.profile_config);
       affected++;
@@ -1327,14 +1517,33 @@ export async function broadcastExtendCommandToClients(
 export function saveClientConfigUpload(requestGuid: string, payload: string): boolean {
   const db = getDb();
   const row = db
-    .prepare("SELECT id FROM config_uploads WHERE request_guid = ?")
-    .get(requestGuid.trim()) as { id: number } | undefined;
+    .prepare("SELECT id, client_uid FROM config_uploads WHERE request_guid = ?")
+    .get(requestGuid.trim()) as { id: number; client_uid: string } | undefined;
   if (!row) return false;
   db.prepare(`
     UPDATE config_uploads
     SET payload = ?, status = 'completed', uploaded_at = ?
     WHERE id = ?
   `).run(payload || "", new Date().toISOString(), row.id);
+
+  if (row.client_uid && payload) {
+    try {
+      const parsed = JSON.parse(payload) as Record<string, unknown>;
+      const action = String(parsed.action || "").toLowerCase();
+      const data = parsed.data as Record<string, unknown> | undefined;
+      if (action === "plugin.list_settings" && data) {
+        markClientExtendEnabled(row.client_uid, "", { pluginSettings: data });
+      } else if (action === "plugin.list_components" && data) {
+        markClientExtendEnabled(row.client_uid, "", { pluginComponents: data });
+      } else if ((action === "system.device_info" || action === "system.status") && data) {
+        markClientExtendEnabled(row.client_uid, "", { hardwareInfo: data });
+      } else if (action === "security.set_app_lock" && data && typeof data.isLocked === "boolean") {
+        markClientExtendEnabled(row.client_uid, "", { isAppLocked: data.isLocked });
+      }
+    } catch {
+      // Ignore parse error
+    }
+  }
   return true;
 }
 
@@ -2092,18 +2301,38 @@ export async function handleGrpcClientRegister(
   }
 }
 
-export function handleGrpcClientUnRegister(clientUid: string): {
+export function isClientRegisteredInDb(clientUid: string): "registered" | "unregistered" | "disabled" {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT uid, is_disabled FROM clients WHERE uid = ?")
+    .get(clientUid) as { uid: string; is_disabled: number } | undefined;
+  if (!row) return "unregistered";
+  if (row.is_disabled) return "disabled";
+  return "registered";
+}
+
+export async function handleGrpcClientUnRegister(
+  clientUid: string,
+  clientMac = ""
+): Promise<{
   retcode: number;
   message: string;
-} {
+}> {
   const db = getDb();
-  const existing = db
+  let existing = db
     .prepare("SELECT uid FROM clients WHERE uid = ?")
-    .get(clientUid);
+    .get(clientUid) as { uid: string } | undefined;
+  if (!existing && clientMac) {
+    const normMac = normalizeMac(clientMac);
+    const all = db
+      .prepare("SELECT uid, mac FROM clients")
+      .all() as Array<{ uid: string; mac: string }>;
+    existing = all.find((c) => normalizeMac(c.mac) === normMac);
+  }
   if (!existing) {
     return { retcode: 10002, message: "Client not found" };
   }
-  deleteClientDevice(clientUid);
+  await deleteClientDevice(existing.uid, false);
   return { retcode: 200, message: "Unregistered" };
 }
 

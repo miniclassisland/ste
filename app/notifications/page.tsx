@@ -6,9 +6,10 @@ import { useAccount } from "@/lib/account-context";
 import type { NotificationPayload, ClientDeviceOut } from "@/lib/types";
 import {
     Button, Input, Spinner, Switch, Textarea,
-    MessageBar, MessageBarBody,
 } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
 import { Select } from "@/components/CustomSelect";
+import { ConfirmPopover } from "@/components/ConfirmPopover";
 import { Send24Regular } from "@fluentui/react-icons";
 
 export default function NotificationsPage() {
@@ -63,7 +64,6 @@ export default function NotificationsPage() {
     }
 
     async function handleBroadcast() {
-        if (!confirm("确定要向所有当前在线客户端广播此通知吗？")) return;
         setSending(true);
         setMsg(null);
         try {
@@ -228,14 +228,21 @@ export default function NotificationsPage() {
                             >
                                 {sending ? <Spinner size="tiny" /> : "发送至指定客户端"}
                             </Button>
-                            <Button
-                                appearance="secondary"
-                                type="button"
-                                onClick={handleBroadcast}
+                            <ConfirmPopover
+                                message="确定要向所有当前在线客户端广播此通知吗？"
+                                onConfirm={handleBroadcast}
+                                confirmText="广播通知"
+                                danger={false}
                                 disabled={sending || onlineClients.length === 0}
                             >
-                                广播至所有在线客户端 ({onlineClients.length} 台)
-                            </Button>
+                                <Button
+                                    appearance="secondary"
+                                    type="button"
+                                    disabled={sending || onlineClients.length === 0}
+                                >
+                                    广播至所有在线客户端 ({onlineClients.length} 台)
+                                </Button>
+                            </ConfirmPopover>
                         </div>
                     </form>
                 )}

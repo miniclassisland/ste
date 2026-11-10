@@ -22,6 +22,8 @@ import type {
   ResourceHistoryVersionOut,
   SiteAnnouncement,
   UserOut,
+  PluginComponentItem,
+  ClientBatchRequest,
 } from "./types";
 
 const TOKEN_KEY = "miniclassisland_auth_token";
@@ -363,6 +365,23 @@ export const clients = {
   restart: (_accountId: string, clientUid: string) =>
     callAction<{ status: string }>("clients.restart", { client_uid: clientUid }),
 
+  lock: (_accountId: string, clientUid: string) =>
+    callAction<{ status: string; delivered: boolean; is_app_locked: boolean; message: string }>(
+      "clients.lock",
+      { client_uid: clientUid }
+    ),
+
+  unlock: (_accountId: string, clientUid: string) =>
+    callAction<{ status: string; delivered: boolean; is_app_locked: boolean; message: string }>(
+      "clients.unlock",
+      { client_uid: clientUid }
+    ),
+
+  getPluginComponents: (_accountId?: string) =>
+    callAction<{ totalCount?: number; components: PluginComponentItem[] }>(
+      "clients.getPluginComponents"
+    ),
+
   forceSync: (_accountId: string, clientUid: string) =>
     callAction<{ status: string }>("clients.forceSync", { client_uid: clientUid }),
 
@@ -392,21 +411,7 @@ export const clients = {
       }
     ),
 
-  batch: (
-    _accountId: string,
-    body: {
-      client_uids: string[];
-      action:
-        | "force_sync"
-        | "restart"
-        | "disconnect"
-        | "enable"
-        | "disable"
-        | "delete"
-        | "assign_profile";
-      profile_config?: ClientProfileConfig;
-    }
-  ) =>
+  batch: (_accountId: string, body: ClientBatchRequest) =>
     callAction<{ status: string; affected: number }>("clients.batch", { body }),
 
   getConfig: (_accountId: string, clientUid: string, configType: number) =>
@@ -424,7 +429,7 @@ export const clients = {
     _accountId: string,
     clientUid: string,
     action: string,
-    payload?: Record<string, unknown>,
+    payload?: Record<string, unknown> | null,
     ttlSeconds = 300
   ) =>
     callAction<ExtendCommandDispatchResult>("clients.sendExtendCommand", {
@@ -437,7 +442,7 @@ export const clients = {
   broadcastExtendCommand: (
     _accountId: string,
     action: string,
-    payload?: Record<string, unknown>,
+    payload?: Record<string, unknown> | null,
     targetClientUids?: string[],
     ttlSeconds = 300
   ) =>

@@ -48,6 +48,8 @@ async function handleRpc(
 
   const uRes = await uHandler(uReq);
   const resHeaders = new Headers(uRes.header);
+  resHeaders.set("X-MiniClassIsland-Server", "miniclassisland-ste");
+  resHeaders.set("X-Server-Flavor", "miniclassisland-ste");
   if (uRes.trailer) {
     for (const [k, v] of uRes.trailer.entries()) {
       resHeaders.append(k, v);

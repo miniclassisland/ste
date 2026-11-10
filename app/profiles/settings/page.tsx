@@ -6,13 +6,14 @@ import { useAccount } from "@/lib/account-context";
 import type { AppDefaultSettings } from "@/lib/types";
 import {
     Button, Input, Switch, Spinner,
-    MessageBar, MessageBarBody,
     Dialog, DialogSurface, DialogBody, DialogTitle, DialogContent, DialogActions,
 } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
 import { Select } from "@/components/CustomSelect";
+import { ConfirmPopover } from "@/components/ConfirmPopover";
 import {
     Add24Regular, Delete24Regular, Save24Regular, ArrowSync24Regular,
-    Code24Regular, ArrowUpload24Regular, Desktop16Regular,
+    Code24Regular, ArrowUpload24Regular, Desktop16Regular, ArrowLeft24Regular,
 } from "@fluentui/react-icons";
 import DownloadPresetPopoverButton from "@/components/DownloadPresetPopoverButton";
 import FileHistoryButton from "@/components/FileHistoryButton";
@@ -24,14 +25,10 @@ type SettingsTabKey =
     | "privacy"
     | "refreshing"
     | "advanced"
-    | "components"
     | "appearance"
     | "window"
     | "notification"
     | "weather"
-    | "automation"
-    | "update"
-    | "plugins"
     | "debug";
 
 interface SettingsHierarchyGroup {
@@ -40,12 +37,6 @@ interface SettingsHierarchyGroup {
     items: Array<{ key: SettingsTabKey; label: string }>;
 }
 
-/**
- * 严格对齐上游 ClassIsland (App.Services.xaml.cs & SettingsWindowNew) 的二级设置导航层级：
- * 1. 通用: 基本、时钟、存储、隐私、翻新与迎新、高级
- * 2. 主界面: 组件、外观、窗口
- * 3. 独立设置页: 提醒(含语音合成)、天气、自动化、更新、插件、调试
- */
 const SETTINGS_HIERARCHY: SettingsHierarchyGroup[] = [
     {
         groupKey: "classisland.general",
@@ -63,7 +54,6 @@ const SETTINGS_HIERARCHY: SettingsHierarchyGroup[] = [
         groupKey: "classisland.mainwindow",
         groupLabel: "主界面",
         items: [
-            { key: "components", label: "组件" },
             { key: "appearance", label: "外观" },
             { key: "window", label: "窗口" },
         ],
@@ -74,9 +64,6 @@ const SETTINGS_HIERARCHY: SettingsHierarchyGroup[] = [
         items: [
             { key: "notification", label: "提醒" },
             { key: "weather", label: "天气" },
-            { key: "automation", label: "自动化" },
-            { key: "update", label: "更新" },
-            { key: "plugins", label: "插件" },
             { key: "debug", label: "调试" },
         ],
     },
@@ -92,8 +79,8 @@ export default function SettingsPage() {
     const [jsonText, setJsonText] = useState("{}");
     const fileUploadRef = useRef<HTMLInputElement>(null);
 
-    // 引导文件生成参数
     const [presetIdentity, setPresetIdentity] = useState("");
+    const [mobileLayer, setMobileLayer] = useState<1 | 2>(1);
 
     const [loading, setLoading] = useState(true);
     const [dataLoading, setDataLoading] = useState(false);
@@ -102,9 +89,10 @@ export default function SettingsPage() {
     const [showCreate, setShowCreate] = useState(false);
     const [newFileName, setNewFileName] = useState("");
 
-    const selectFile = useCallback(async (name: string) => {
+    const selectFile = useCallback(async (name: string, enterMobileEditor = false) => {
         if (!accountId) return;
         setSelectedFile(name);
+        if (enterMobileEditor) setMobileLayer(2);
         setDataLoading(true);
         setMsg(null);
         try {
@@ -120,20 +108,23 @@ export default function SettingsPage() {
     }, [accountId]);
 
     const loadFiles = useCallback(async () => {
+        if (!accountId) {
+            setLoading(false);
+            return;
+        }
         setLoading(true);
-        if (!accountId) return;
         try {
             const list = await data.list(accountId, "DefaultSettings");
             const arr = Array.isArray(list) ? list : [];
             setFileList(arr);
-            if (arr.length > 0 && !selectedFile) {
+            if (arr.length > 0 && (!selectedFile || !arr.includes(selectedFile))) {
                 selectFile(arr[0]);
             }
         } catch {
             setFileList([]);
         }
         setLoading(false);
-    }, [accountId, selectedFile, selectFile]);
+    }, [accountId, selectFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         loadFiles();
@@ -152,7 +143,7 @@ export default function SettingsPage() {
                 setJsonText(JSON.stringify(settings, null, 2));
             }
             await data.write(accountId, "DefaultSettings", selectedFile, payloadToSave);
-            setMsg({ type: "success", text: "客户端默认应用设置 已保存并递增版本号" });
+            setMsg({ type: "success", text: "设置已保存" });
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "保存失败" });
         }
@@ -167,13 +158,13 @@ export default function SettingsPage() {
             try {
                 const parsed = JSON.parse(String(reader.result || "{}"));
                 if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-                    throw new Error("Settings.json 必须是 JSON 对象");
+                    throw new Error("设置文件必须是 JSON 对象");
                 }
                 setSettings(parsed as AppDefaultSettings);
                 setJsonText(JSON.stringify(parsed, null, 2));
                 setMsg({
                     type: "success",
-                    text: `已从本地文件「${file.name}」导入 ${Object.keys(parsed).length} 项客户端设置，请点击「保存」以写入集控服务端`,
+                    text: `已从本地文件导入 ${Object.keys(parsed).length} 项客户端设置，请点击「保存」以写入集控服务端`,
                 });
             } catch (err: unknown) {
                 setMsg({
@@ -195,17 +186,19 @@ export default function SettingsPage() {
             setShowCreate(false);
             setNewFileName("");
             await loadFiles();
-            selectFile(name);
+            selectFile(name, true);
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "创建失败" });
         }
     }
 
     async function handleDeleteFile(name: string) {
-        if (!confirm(`确定删除 "${name}"？`)) return;
         try {
             await data.deleteData(accountId, "DefaultSettings", name);
-            if (selectedFile === name) setSelectedFile(null);
+            if (selectedFile === name) {
+                setSelectedFile(null);
+                setMobileLayer(1);
+            }
             await loadFiles();
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "删除失败" });
@@ -224,9 +217,9 @@ export default function SettingsPage() {
         <div className="fade-in">
             <div className="page-header">
                 <div>
-                    <h1 className="page-title">默认设置管理</h1>
+                    <h1 className="page-title">设置</h1>
                     <p className="page-subtitle">
-                        管理下发至 ClassIsland 客户端的全量应用设置
+                        管理下发至 ClassIsland 客户端的应用设置
                     </p>
                 </div>
                 <div className="flex gap-8" style={{ flexWrap: "wrap" }}>
@@ -241,7 +234,6 @@ export default function SettingsPage() {
                 </MessageBar>
             )}
 
-            {/* 快速生成客户端集控接入引导文件 */}
             <div className="card" style={{ padding: "14px 20px" }}>
                 <div className="flex items-center justify-between" style={{ flexWrap: "wrap", gap: 12 }}>
                     <div>
@@ -259,7 +251,7 @@ export default function SettingsPage() {
                             onError={(text) => setMsg({ type: "error", text })}
                         />
                         <Input
-                            placeholder="预设班级标识（可选）"
+                            placeholder="预设班级标识"
                             value={presetIdentity}
                             onChange={(_, d) => setPresetIdentity(d.value)}
                             style={{ width: 220 }}
@@ -276,44 +268,63 @@ export default function SettingsPage() {
             </div>
 
             <div className="profile-split-layout">
-                <div className="profile-split-sidebar">
+                <div className={`profile-split-sidebar ${mobileLayer !== 1 ? "mobile-layer-hidden" : ""}`}>
                     <div className="card">
-                        <div className="card-title">默认设置文件</div>
+                        <div className="card-title">设置文件</div>
                         {loading ? (
                             <Spinner size="small" />
+                        ) : fileList.length === 0 ? (
+                            <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>暂无文件</div>
                         ) : (
-                            fileList.map((f) => (
-                                <div
-                                    key={f}
-                                    className={`sidebar-link ${selectedFile === f ? "active" : ""}`}
-                                    onClick={() => selectFile(f)}
-                                >
-                                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{f}</span>
-                                    <Button
-                                        appearance="subtle"
-                                        size="small"
-                                        icon={<Delete24Regular />}
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleDeleteFile(f);
-                                        }}
-                                        style={{ color: "var(--danger-color)", minWidth: 24, padding: 2 }}
-                                    />
-                                </div>
-                            ))
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                {fileList.map((f) => (
+                                    <div
+                                        key={f}
+                                        className={`sidebar-link ${selectedFile === f ? "active" : ""}`}
+                                        onClick={() => selectFile(f, true)}
+                                    >
+                                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{f}</span>
+                                        <ConfirmPopover
+                                            message={`确定删除 "${f}"？`}
+                                            onConfirm={() => handleDeleteFile(f)}
+                                            confirmText="删除"
+                                        >
+                                            <Button
+                                                appearance="subtle"
+                                                size="small"
+                                                icon={<Delete24Regular />}
+                                                style={{ color: "var(--danger-color)" }}
+                                            />
+                                        </ConfirmPopover>
+                                    </div>
+                                ))}
+                            </div>
                         )}
                     </div>
                 </div>
 
-                <div style={{ flex: 1, minWidth: 0 }}>
+                <div className={mobileLayer === 1 ? "mobile-layer-hidden" : ""} style={{ flex: 1, minWidth: 0 }}>
+                    <div className="mobile-only-nav-bar" style={{ marginBottom: 12 }}>
+                        <Button
+                            size="small"
+                            appearance="subtle"
+                            icon={<ArrowLeft24Regular />}
+                            onClick={() => setMobileLayer(1)}
+                        >
+                            返回文件列表
+                        </Button>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{selectedFile || "编辑设置"}</span>
+                        <span />
+                    </div>
+
                     {!selectedFile ? (
-                        <div className="card"><div className="empty-state"><div className="empty-state-text">请选择默认设置文件</div></div></div>
+                        <div className="card"><div className="empty-state"><div className="empty-state-text">请选择设置文件</div></div></div>
                     ) : dataLoading ? (
                         <div className="card"><div className="empty-state"><Spinner size="medium" /></div></div>
                     ) : (
                         <div className="card">
                             <div className="flex items-center justify-between mb-16" style={{ flexWrap: "wrap", gap: 8 }}>
-                                <div className="card-title" style={{ margin: 0 }}>编辑默认设置: {selectedFile}</div>
+                                <div className="card-title" style={{ margin: 0 }}>编辑设置: {selectedFile}</div>
                                 <div className="flex gap-8" style={{ flexWrap: "wrap" }}>
                                     <input
                                         ref={fileUploadRef}
@@ -327,7 +338,7 @@ export default function SettingsPage() {
                                         icon={<ArrowUpload24Regular />}
                                         onClick={() => fileUploadRef.current?.click()}
                                     >
-                                        导入本地 Settings.json
+                                        导入本地设置文件
                                     </Button>
                                     <FileHistoryButton
                                         accountId={accountId}
@@ -341,13 +352,13 @@ export default function SettingsPage() {
                                                 type: "success",
                                                 text: isCurrent
                                                     ? `已加载当前最新版本 v${version}`
-                                                    : `已加载历史版本 v${version} 到编辑器（点击「保存」将创建一个新版本，不会覆盖历史版本）`,
+                                                    : `已加载历史版本 v${version} 到编辑器`,
                                             });
                                         }}
                                         onError={(text) => setMsg({ type: "error", text })}
                                     />
                                     <DownloadPresetPopoverButton
-                                        buttonText="导出 JSON"
+                                        buttonText="导出"
                                         appearance="secondary"
                                         defaultFileName={`DefaultSettings-${selectedFile}.json`}
                                         suggestedNames={[
@@ -384,7 +395,6 @@ export default function SettingsPage() {
                                 </div>
                             ) : (
                                 <>
-                                    {/* 对齐上游 ClassIsland SettingsWindowNew 的二级分组导航栏 */}
                                     <div
                                         style={{
                                             display: "flex",
@@ -434,7 +444,6 @@ export default function SettingsPage() {
                                         ))}
                                     </div>
 
-                                    {/* 通用 -> 基本 */}
                                     {activeTab === "general" && (
                                         <div className="settings-section">
                                             <div className="settings-section-title">通用 · 基本</div>
@@ -444,7 +453,7 @@ export default function SettingsPage() {
                                                     <Input
                                                         value={settings.SelectedProfile ?? "Default.json"}
                                                         onChange={(_, d) => update("SelectedProfile", d.value)}
-                                                        placeholder="Default.json"
+                                                        placeholder="输入档案文件名称"
                                                         style={{ width: "100%" }}
                                                     />
                                                 </div>
@@ -464,7 +473,7 @@ export default function SettingsPage() {
                                                     <Input
                                                         value={settings.SingleWeekStartTime ?? ""}
                                                         onChange={(_, d) => update("SingleWeekStartTime", d.value)}
-                                                        placeholder="例如 2026-09-01T00:00:00"
+                                                        placeholder="输入起始日期与时间"
                                                         style={{ width: "100%" }}
                                                     />
                                                 </div>
@@ -476,12 +485,12 @@ export default function SettingsPage() {
                                                     <Input
                                                         value={settings.SplashCustomText ?? ""}
                                                         onChange={(_, d) => update("SplashCustomText", d.value)}
-                                                        placeholder="留空显示默认 ClassIsland 标志"
+                                                        placeholder="留空显示默认标志"
                                                         style={{ width: "100%" }}
                                                     />
                                                 </div>
                                                 <div className="form-group">
-                                                    <label className="form-label">启动画面自定义 Logo 路径</label>
+                                                    <label className="form-label">启动画面自定义图标路径</label>
                                                     <Input
                                                         value={settings.SplashCustomLogoSource ?? ""}
                                                         onChange={(_, d) => update("SplashCustomLogoSource", d.value)}
@@ -493,7 +502,7 @@ export default function SettingsPage() {
 
                                             <div className="grid-2">
                                                 <div className="form-group">
-                                                    <label className="form-label">默认上课时长(分钟)</label>
+                                                    <label className="form-label">默认上课时长</label>
                                                     <Input
                                                         type="number"
                                                         min={1}
@@ -503,7 +512,7 @@ export default function SettingsPage() {
                                                     />
                                                 </div>
                                                 <div className="form-group">
-                                                    <label className="form-label">默认课间时长(分钟)</label>
+                                                    <label className="form-label">默认课间时长</label>
                                                     <Input
                                                         type="number"
                                                         min={1}
@@ -559,26 +568,16 @@ export default function SettingsPage() {
                                                     onChange={(_, d) => update("ExpAllowEditingActivatedTimeLayout", d.checked)}
                                                 />
                                             </div>
-                                            <div className="settings-item">
-                                                <div className="settings-item-info">
-                                                    <div className="settings-item-label">自动禁用导致崩溃的损坏插件</div>
-                                                </div>
-                                                <Switch
-                                                    checked={settings.AutoDisableCorruptPlugins !== false}
-                                                    onChange={(_, d) => update("AutoDisableCorruptPlugins", d.checked)}
-                                                />
-                                            </div>
                                         </div>
                                     )}
 
-                                    {/* 通用 -> 时钟 */}
                                     {activeTab === "clock" && (
                                         <div className="settings-section">
                                             <div className="settings-section-title">通用 · 时钟</div>
                                             <div className="settings-item">
                                                 <div className="settings-item-info">
-                                                    <div className="settings-item-label">启用 NTP 网络精确时间同步</div>
-                                                    <div className="settings-item-hint">开启后客户端自动从指定 NTP 服务器同步标准时间，消除主板时钟误差</div>
+                                                    <div className="settings-item-label">启用网络精确时间同步</div>
+                                                    <div className="settings-item-hint">开启后客户端自动从指定时间服务器同步标准时间</div>
                                                 </div>
                                                 <Switch
                                                     checked={settings.IsExactTimeEnabled !== false}
@@ -597,11 +596,11 @@ export default function SettingsPage() {
 
                                             <div className="grid-3 mt-16">
                                                 <div className="form-group">
-                                                    <label className="form-label">NTP 时间服务器地址</label>
+                                                    <label className="form-label">时间服务器地址</label>
                                                     <Input
                                                         value={settings.ExactTimeServer ?? "ntp.aliyun.com"}
                                                         onChange={(_, d) => update("ExactTimeServer", d.value)}
-                                                        placeholder="ntp.aliyun.com"
+                                                        placeholder="输入时间服务器域名或地址"
                                                         style={{ width: "100%" }}
                                                     />
                                                 </div>
@@ -629,7 +628,6 @@ export default function SettingsPage() {
                                         </div>
                                     )}
 
-                                    {/* 通用 -> 存储 */}
                                     {activeTab === "storage" && (
                                         <div className="settings-section">
                                             <div className="settings-section-title">通用 · 存储与自动备份</div>
@@ -667,13 +665,12 @@ export default function SettingsPage() {
                                         </div>
                                     )}
 
-                                    {/* 通用 -> 隐私 */}
                                     {activeTab === "privacy" && (
                                         <div className="settings-section">
-                                            <div className="settings-section-title">通用 · 隐私与诊断遥测</div>
+                                            <div className="settings-section-title">通用 · 隐私与诊断</div>
                                             <div className="settings-item">
                                                 <div className="settings-item-info">
-                                                    <div className="settings-item-label">启用崩溃与诊断遥测上报</div>
+                                                    <div className="settings-item-label">启用崩溃与诊断上报</div>
                                                     <div className="settings-item-hint">控制客户端是否允许上报诊断与崩溃分析信息</div>
                                                 </div>
                                                 <Switch
@@ -684,7 +681,6 @@ export default function SettingsPage() {
                                         </div>
                                     )}
 
-                                    {/* 通用 -> 翻新与迎新 */}
                                     {activeTab === "refreshing" && (
                                         <div className="settings-section">
                                             <div className="settings-section-title">通用 · 翻新与迎新</div>
@@ -710,7 +706,6 @@ export default function SettingsPage() {
                                         </div>
                                     )}
 
-                                    {/* 通用 -> 高级 */}
                                     {activeTab === "advanced" && (
                                         <div className="settings-section">
                                             <div className="settings-section-title">通用 · 高级与兼容性</div>
@@ -730,7 +725,7 @@ export default function SettingsPage() {
                                             </div>
                                             <div className="settings-item">
                                                 <div className="settings-item-info">
-                                                    <div className="settings-item-label">使用 RawInput 检测鼠标坐标</div>
+                                                    <div className="settings-item-label">启用底层鼠标坐标检测</div>
                                                 </div>
                                                 <Switch
                                                     checked={!!settings.UseRawInput}
@@ -757,7 +752,7 @@ export default function SettingsPage() {
                                             </div>
                                             <div className="settings-item">
                                                 <div className="settings-item-info">
-                                                    <div className="settings-item-label">防截屏/录屏捕获保护</div>
+                                                    <div className="settings-item-label">防截屏与录屏捕获保护</div>
                                                 </div>
                                                 <Switch
                                                     checked={!!settings.IsWindowCaptureBlockingEnabled}
@@ -766,7 +761,7 @@ export default function SettingsPage() {
                                             </div>
                                             <div className="settings-item">
                                                 <div className="settings-item-info">
-                                                    <div className="settings-item-label">降低进度条刷新精度以节省希沃白板 CPU 占用</div>
+                                                    <div className="settings-item-label">降低进度条刷新精度以节省白板软件资源占用</div>
                                                 </div>
                                                 <Switch
                                                     checked={settings.ReduceProgressAccuracy !== false}
@@ -776,107 +771,6 @@ export default function SettingsPage() {
                                         </div>
                                     )}
 
-                                    {/* 主界面 -> 组件 */}
-                                    {activeTab === "components" && (
-                                        <div className="settings-section">
-                                            <div className="settings-section-title">主界面 · 组件与课程显示</div>
-                                            <div className="grid-3">
-                                                <div className="form-group">
-                                                    <label className="form-label">当前组件配置方案名</label>
-                                                    <Input
-                                                        value={settings.CurrentComponentConfig ?? "Default"}
-                                                        onChange={(_, d) => update("CurrentComponentConfig", d.value)}
-                                                        placeholder="Default"
-                                                        style={{ width: "100%" }}
-                                                    />
-                                                </div>
-                                                <div className="form-group">
-                                                    <label className="form-label">课程表项间距</label>
-                                                    <Input
-                                                        type="number"
-                                                        step={0.5}
-                                                        value={String(settings.ScheduleSpacing ?? 1.0)}
-                                                        onChange={(_, d) => update("ScheduleSpacing", parseFloat(d.value) || 0)}
-                                                        style={{ width: "100%" }}
-                                                    />
-                                                </div>
-                                                <div className="form-group">
-                                                    <label className="form-label">时间点附加信息类型</label>
-                                                    <Select
-                                                        value={String(settings.ExtraInfoType ?? 0)}
-                                                        onChange={(_, d) => update("ExtraInfoType", parseInt(d.value, 10))}
-                                                        style={{ width: "100%" }}
-                                                    >
-                                                        <option value={0}>不显示 / 默认</option>
-                                                        <option value={1}>显示已进行时间</option>
-                                                        <option value={2}>显示倒计时百分比</option>
-                                                        <option value={3}>显示倒计时分/秒</option>
-                                                        <option value={4}>倒计时最后显示秒数</option>
-                                                    </Select>
-                                                </div>
-                                            </div>
-
-                                            <div className="grid-2">
-                                                <div className="form-group">
-                                                    <label className="form-label">上课倒计时触发阈值(秒)</label>
-                                                    <Input
-                                                        type="number"
-                                                        value={String(settings.CountdownSeconds ?? 60)}
-                                                        onChange={(_, d) => update("CountdownSeconds", parseInt(d.value, 10) || 60)}
-                                                        style={{ width: "100%" }}
-                                                    />
-                                                </div>
-                                                <div className="form-group">
-                                                    <label className="form-label">精确秒数显示阈值(秒)</label>
-                                                    <Input
-                                                        type="number"
-                                                        value={String(settings.ExtraInfo4ShowSecondsSeconds ?? 60)}
-                                                        onChange={(_, d) => update("ExtraInfo4ShowSecondsSeconds", parseInt(d.value, 10) || 60)}
-                                                        style={{ width: "100%" }}
-                                                    />
-                                                </div>
-                                            </div>
-
-                                            <div className="settings-item">
-                                                <div className="settings-item-info">
-                                                    <div className="settings-item-label">上课时仅显示当前课程</div>
-                                                </div>
-                                                <Switch
-                                                    checked={!!settings.ShowCurrentLessonOnlyOnClass}
-                                                    onChange={(_, d) => update("ShowCurrentLessonOnlyOnClass", d.checked)}
-                                                />
-                                            </div>
-                                            <div className="settings-item">
-                                                <div className="settings-item-info">
-                                                    <div className="settings-item-label">在时间点上显示附加信息</div>
-                                                </div>
-                                                <Switch
-                                                    checked={settings.ShowExtraInfoOnTimePoint !== false}
-                                                    onChange={(_, d) => update("ShowExtraInfoOnTimePoint", d.checked)}
-                                                />
-                                            </div>
-                                            <div className="settings-item">
-                                                <div className="settings-item-info">
-                                                    <div className="settings-item-label">启用上课前倒计时显示</div>
-                                                </div>
-                                                <Switch
-                                                    checked={settings.IsCountdownEnabled !== false}
-                                                    onChange={(_, d) => update("IsCountdownEnabled", d.checked)}
-                                                />
-                                            </div>
-                                            <div className="settings-item">
-                                                <div className="settings-item-info">
-                                                    <div className="settings-item-label">启用模糊倒计时模式</div>
-                                                </div>
-                                                <Switch
-                                                    checked={!!settings.IsNonExactCountdownEnabled}
-                                                    onChange={(_, d) => update("IsNonExactCountdownEnabled", d.checked)}
-                                                />
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* 主界面 -> 窗口 */}
                                     {activeTab === "window" && (
                                         <div className="settings-section">
                                             <div className="settings-section-title">主界面 · 窗口、停靠与避让</div>
@@ -891,7 +785,6 @@ export default function SettingsPage() {
                                                 />
                                             </div>
 
-                                            {/* 原位复刻上游 WindowSettingsPage 屏幕 6 停靠点可视化选择器 */}
                                             <div style={{ marginTop: 14, marginBottom: 16, padding: 16, borderRadius: 10, border: "1px solid var(--border-color)", background: "rgba(0,0,0,0.18)" }}>
                                                 <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
                                                     窗口停靠位置可视化预览
@@ -941,7 +834,7 @@ export default function SettingsPage() {
                                                     </div>
                                                     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 11, color: "var(--text-secondary)" }}>
                                                         <Desktop16Regular />
-                                                        <span>显示器 #{settings.WindowDockingMonitorIndex ?? 0} · 偏移 ({settings.WindowDockingOffsetX ?? 0}, {settings.WindowDockingOffsetY ?? 0})</span>
+                                                        <span>显示器 #{settings.WindowDockingMonitorIndex ?? 0} · 偏移 {settings.WindowDockingOffsetX ?? 0}, {settings.WindowDockingOffsetY ?? 0}</span>
                                                     </div>
                                                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
                                                         {[
@@ -1015,7 +908,7 @@ export default function SettingsPage() {
 
                                             <div className="grid-3">
                                                 <div className="form-group">
-                                                    <label className="form-label">窗口向右偏移 X</label>
+                                                    <label className="form-label">窗口水平偏移</label>
                                                     <Input
                                                         type="number"
                                                         value={String(settings.WindowDockingOffsetX ?? 0)}
@@ -1024,7 +917,7 @@ export default function SettingsPage() {
                                                     />
                                                 </div>
                                                 <div className="form-group">
-                                                    <label className="form-label">窗口向下偏移 Y</label>
+                                                    <label className="form-label">窗口垂直偏移</label>
                                                     <Input
                                                         type="number"
                                                         value={String(settings.WindowDockingOffsetY ?? 0)}
@@ -1041,7 +934,7 @@ export default function SettingsPage() {
                                                     >
                                                         <option value={0}>打开主菜单</option>
                                                         <option value={1}>打开档案编辑窗口</option>
-                                                        <option value={2}>显示/隐藏主界面</option>
+                                                        <option value={2}>显示或隐藏主界面</option>
                                                         <option value={3}>打开换课窗口</option>
                                                         <option value={4}>打开设置窗口</option>
                                                     </Select>
@@ -1101,7 +994,7 @@ export default function SettingsPage() {
                                             </div>
                                             <div className="settings-item">
                                                 <div className="settings-item-info">
-                                                    <div className="settings-item-label">忽略桌面工作区限制 / 贴边停靠</div>
+                                                    <div className="settings-item-label">忽略桌面工作区限制贴边停靠</div>
                                                 </div>
                                                 <Switch
                                                     checked={!!settings.IsIgnoreWorkAreaEnabled}
@@ -1128,7 +1021,7 @@ export default function SettingsPage() {
                                             </div>
                                             <div className="settings-item">
                                                 <div className="settings-item-info">
-                                                    <div className="settings-item-label">反转鼠标移入渐隐（移入时显现、移出时半透明）</div>
+                                                    <div className="settings-item-label">反转鼠标移入渐隐</div>
                                                 </div>
                                                 <Switch
                                                     checked={!!settings.IsMouseInFadingReversed}
@@ -1138,7 +1031,6 @@ export default function SettingsPage() {
                                         </div>
                                     )}
 
-                                    {/* 主界面 -> 外观 */}
                                     {activeTab === "appearance" && (
                                         <div className="settings-section">
                                             <div className="settings-section-title">主界面 · 外观、主题与字体</div>
@@ -1189,7 +1081,7 @@ export default function SettingsPage() {
                                                             type="color"
                                                             value={settings.PrimaryColor || "#0078D4"}
                                                             onChange={(e) => update("PrimaryColor", e.target.value)}
-                                                            style={{ width: 40, height: 32, border: "1px solid var(--border-color)", borderRadius: 4 }}
+                                                            style={{ width: 40, height: 34, border: "1px solid var(--border-color)", borderRadius: "var(--radius-sm)" }}
                                                         />
                                                         <Input
                                                             value={settings.PrimaryColor || "#0078D4"}
@@ -1205,7 +1097,7 @@ export default function SettingsPage() {
                                                             type="color"
                                                             value={settings.SecondaryColor || "#005A9E"}
                                                             onChange={(e) => update("SecondaryColor", e.target.value)}
-                                                            style={{ width: 40, height: 32, border: "1px solid var(--border-color)", borderRadius: 4 }}
+                                                            style={{ width: 40, height: 34, border: "1px solid var(--border-color)", borderRadius: "var(--radius-sm)" }}
                                                         />
                                                         <Input
                                                             value={settings.SecondaryColor || "#005A9E"}
@@ -1230,7 +1122,7 @@ export default function SettingsPage() {
                                                     />
                                                 </div>
                                                 <div className="form-group">
-                                                    <label className="form-label">圆角半径 X</label>
+                                                    <label className="form-label">水平圆角半径</label>
                                                     <Input
                                                         type="number"
                                                         value={String(settings.RadiusX ?? 8)}
@@ -1239,7 +1131,7 @@ export default function SettingsPage() {
                                                     />
                                                 </div>
                                                 <div className="form-group">
-                                                    <label className="form-label">圆角半径 Y</label>
+                                                    <label className="form-label">垂直圆角半径</label>
                                                     <Input
                                                         type="number"
                                                         value={String(settings.RadiusY ?? 8)}
@@ -1339,7 +1231,7 @@ export default function SettingsPage() {
                                                             type="color"
                                                             value={settings.BackgroundColor || "#000000"}
                                                             onChange={(e) => update("BackgroundColor", e.target.value)}
-                                                            style={{ width: 36, height: 28, border: "1px solid var(--border-color)", borderRadius: 4 }}
+                                                            style={{ width: 36, height: 28, border: "1px solid var(--border-color)", borderRadius: "var(--radius-sm)" }}
                                                         />
                                                     )}
                                                     <Switch
@@ -1350,7 +1242,7 @@ export default function SettingsPage() {
                                             </div>
                                             <div className="settings-item">
                                                 <div className="settings-item-info">
-                                                    <div className="settings-item-label">启用自定义前景色/文字颜色</div>
+                                                    <div className="settings-item-label">启用自定义前景色</div>
                                                 </div>
                                                 <div className="flex items-center gap-8">
                                                     {settings.IsCustomForegroundColorEnabled && (
@@ -1358,7 +1250,7 @@ export default function SettingsPage() {
                                                             type="color"
                                                             value={settings.CustomForegroundColor || "#FFFFFF"}
                                                             onChange={(e) => update("CustomForegroundColor", e.target.value)}
-                                                            style={{ width: 36, height: 28, border: "1px solid var(--border-color)", borderRadius: 4 }}
+                                                            style={{ width: 36, height: 28, border: "1px solid var(--border-color)", borderRadius: "var(--radius-sm)" }}
                                                         />
                                                     )}
                                                     <Switch
@@ -1379,7 +1271,6 @@ export default function SettingsPage() {
                                         </div>
                                     )}
 
-                                    {/* 功能与系统 -> 提醒与语音合成 */}
                                     {activeTab === "notification" && (
                                         <div className="settings-section">
                                             <div className="settings-section-title">功能与系统 · 提醒、全屏波纹特效与语音合成</div>
@@ -1421,7 +1312,7 @@ export default function SettingsPage() {
                                             </div>
                                             <div className="settings-item">
                                                 <div className="settings-item-info">
-                                                    <div className="settings-item-label">使用独立 UI 线程渲染全屏提醒特效</div>
+                                                    <div className="settings-item-label">使用独立渲染线程绘制全屏提醒特效</div>
                                                 </div>
                                                 <Switch
                                                     checked={settings.NotificationUseStandaloneEffectUiThread !== false}
@@ -1504,7 +1395,7 @@ export default function SettingsPage() {
                                             <div className="settings-section-title mt-16">语音合成引擎</div>
                                             <div className="settings-item">
                                                 <div className="settings-item-info">
-                                                    <div className="settings-item-label">启用 TTS 语音合成播报</div>
+                                                    <div className="settings-item-label">启用语音合成播报</div>
                                                 </div>
                                                 <Switch
                                                     checked={settings.IsSpeechEnabled !== false}
@@ -1520,9 +1411,9 @@ export default function SettingsPage() {
                                                         onChange={(_, d) => update("SpeechSource", parseInt(d.value, 10))}
                                                         style={{ width: "100%" }}
                                                     >
-                                                        <option value={0}>系统内置 TTS</option>
-                                                        <option value={1}>微软 EdgeTTS 在线神经网络语音</option>
-                                                        <option value={2}>GPT-SoVITS 自定义语音服务</option>
+                                                        <option value={0}>系统内置语音</option>
+                                                        <option value={1}>微软在线神经网络语音</option>
+                                                        <option value={2}>自定义语音服务</option>
                                                     </Select>
                                                 </div>
                                                 <div className="form-group">
@@ -1533,8 +1424,8 @@ export default function SettingsPage() {
                                                         style={{ width: "100%" }}
                                                     >
                                                         <option value="classisland.speech.system">系统内置语音</option>
-                                                        <option value="classisland.speech.edgeTts">微软 EdgeTTS</option>
-                                                        <option value="classisland.speech.gptSoVits">GPT-SoVITS</option>
+                                                        <option value="classisland.speech.edgeTts">微软在线神经网络语音</option>
+                                                        <option value="classisland.speech.gptSoVits">自定义语音服务</option>
                                                     </Select>
                                                 </div>
                                             </div>
@@ -1553,11 +1444,11 @@ export default function SettingsPage() {
                                                     />
                                                 </div>
                                                 <div className="form-group">
-                                                    <label className="form-label">EdgeTTS 发音人名称</label>
+                                                    <label className="form-label">在线语音发音人名称</label>
                                                     <Input
                                                         value={settings.EdgeTtsVoiceName ?? "zh-CN-XiaoxiaoNeural"}
                                                         onChange={(_, d) => update("EdgeTtsVoiceName", d.value)}
-                                                        placeholder="zh-CN-XiaoxiaoNeural"
+                                                        placeholder="输入发音人标识"
                                                         style={{ width: "100%" }}
                                                     />
                                                 </div>
@@ -1565,7 +1456,6 @@ export default function SettingsPage() {
                                         </div>
                                     )}
 
-                                    {/* 功能与系统 -> 天气 */}
                                     {activeTab === "weather" && (
                                         <div className="settings-section">
                                             <div className="settings-section-title">功能与系统 · 天气数据源与城市定位</div>
@@ -1577,7 +1467,7 @@ export default function SettingsPage() {
                                                         onChange={(_, d) => update("WeatherLocationSource", parseInt(d.value, 10))}
                                                         style={{ width: "100%" }}
                                                     >
-                                                        <option value={0}>按城市/区县名称搜索</option>
+                                                        <option value={0}>按城市与区县名称搜索</option>
                                                         <option value={1}>按经纬度坐标定位</option>
                                                         <option value={2}>系统自动定位</option>
                                                     </Select>
@@ -1587,16 +1477,16 @@ export default function SettingsPage() {
                                                     <Input
                                                         value={settings.CityId ?? "101010100"}
                                                         onChange={(_, d) => update("CityId", d.value)}
-                                                        placeholder="例如 101010100"
+                                                        placeholder="输入城市编码"
                                                         style={{ width: "100%" }}
                                                     />
                                                 </div>
                                                 <div className="form-group">
                                                     <label className="form-label">城市显示名称</label>
                                                     <Input
-                                                        value={settings.CityName ?? "北京 (北京, 中国)"}
+                                                        value={settings.CityName ?? "北京"}
                                                         onChange={(_, d) => update("CityName", d.value)}
-                                                        placeholder="例如 北京 (北京, 中国)"
+                                                        placeholder="输入城市显示名称"
                                                         style={{ width: "100%" }}
                                                     />
                                                 </div>
@@ -1644,7 +1534,7 @@ export default function SettingsPage() {
                                             </div>
                                             <div className="settings-item">
                                                 <div className="settings-item-info">
-                                                    <div className="settings-item-label">使用无 TLS 请求获取天气数据以兼容老旧根证书系统</div>
+                                                    <div className="settings-item-label">使用无加密请求获取天气数据以兼容旧系统</div>
                                                 </div>
                                                 <Switch
                                                     checked={!!settings.NoTLSWeatherRequests}
@@ -1654,78 +1544,6 @@ export default function SettingsPage() {
                                         </div>
                                     )}
 
-                                    {/* 功能与系统 -> 自动化 */}
-                                    {activeTab === "automation" && (
-                                        <div className="settings-section">
-                                            <div className="settings-section-title">功能与系统 · 自动化工作流引擎</div>
-                                            <div className="settings-item">
-                                                <div className="settings-item-info">
-                                                    <div className="settings-item-label">启用自动化工作流引擎</div>
-                                                    <div className="settings-item-hint">开启后客户端将按照当前自动化方案响应上下课、全屏、天气预警等触发器</div>
-                                                </div>
-                                                <Switch
-                                                    checked={settings.IsAutomationEnabled !== false}
-                                                    onChange={(_, d) => update("IsAutomationEnabled", d.checked)}
-                                                />
-                                            </div>
-                                            <div className="form-group mt-16">
-                                                <label className="form-label">当前自动化配置方案名称</label>
-                                                <Input
-                                                    value={settings.CurrentAutomationConfig ?? "Default"}
-                                                    onChange={(_, d) => update("CurrentAutomationConfig", d.value)}
-                                                    placeholder="Default"
-                                                    style={{ width: "100%" }}
-                                                />
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* 功能与系统 -> 更新 */}
-                                    {activeTab === "update" && (
-                                        <div className="settings-section">
-                                            <div className="settings-section-title">功能与系统 · 应用自动更新策略</div>
-                                            <div className="form-group">
-                                                <label className="form-label">客户端应用更新模式</label>
-                                                <Select
-                                                    value={String(settings.UpdateMode ?? 0)}
-                                                    onChange={(_, d) => update("UpdateMode", parseInt(d.value, 10))}
-                                                    style={{ width: "100%" }}
-                                                >
-                                                    <option value={0}>不自动检查更新</option>
-                                                    <option value={1}>自动检查更新并通知</option>
-                                                    <option value={2}>自动检查并下载更新</option>
-                                                    <option value={3}>自动下载并在重启时安装</option>
-                                                </Select>
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* 功能与系统 -> 插件 */}
-                                    {activeTab === "plugins" && (
-                                        <div className="settings-section">
-                                            <div className="settings-section-title">功能与系统 · 插件与插件市场管理</div>
-                                            <div className="settings-item">
-                                                <div className="settings-item-info">
-                                                    <div className="settings-item-label">自动更新已安装插件</div>
-                                                </div>
-                                                <Switch
-                                                    checked={settings.IsPluginsAutoUpdateEnabled !== false}
-                                                    onChange={(_, d) => update("IsPluginsAutoUpdateEnabled", d.checked)}
-                                                />
-                                            </div>
-                                            <div className="settings-item">
-                                                <div className="settings-item-info">
-                                                    <div className="settings-item-label">自动禁用导致崩溃的损坏插件</div>
-                                                </div>
-                                                <Switch
-                                                    checked={settings.AutoDisableCorruptPlugins !== false}
-                                                    onChange={(_, d) => update("AutoDisableCorruptPlugins", d.checked)}
-                                                />
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* 功能与系统 -> 调试 */}
                                     {activeTab === "debug" && (
                                         <div className="settings-section">
                                             <div className="settings-section-title">功能与系统 · 调试与开发者选项</div>
@@ -1752,14 +1570,14 @@ export default function SettingsPage() {
                 <Dialog open onOpenChange={() => setShowCreate(false)}>
                     <DialogSurface>
                         <DialogBody>
-                            <DialogTitle>新建默认设置文件</DialogTitle>
+                            <DialogTitle>新建设置文件</DialogTitle>
                             <DialogContent>
                                 <div className="form-group">
                                     <label className="form-label">文件名</label>
                                     <Input
                                         value={newFileName}
                                         onChange={(_, d) => setNewFileName(d.value)}
-                                        placeholder="如 default"
+                                        placeholder="输入文件名称"
                                         style={{ width: "100%" }}
                                     />
                                 </div>

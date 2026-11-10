@@ -6,9 +6,10 @@ import { useAccount } from "@/lib/account-context";
 import type { ResourceType } from "@/lib/types";
 import {
     Button, Input, Spinner, Textarea,
-    MessageBar, MessageBarBody,
     Dialog, DialogSurface, DialogBody, DialogTitle, DialogContent, DialogActions,
 } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
+import { ConfirmPopover } from "@/components/ConfirmPopover";
 import { Add24Regular, Delete24Regular, Save24Regular, ArrowSync24Regular } from "@fluentui/react-icons";
 
 /**
@@ -94,7 +95,6 @@ export default function JsonResourceEditor({
     }
 
     async function handleDeleteFile(name: string) {
-        if (!confirm(`确定删除 "${name}"？`)) return;
         try {
             await data.deleteData(accountId, resourceType, name);
             if (selectedFile === name) { setSelectedFile(null); setJsonContent(""); }
@@ -133,13 +133,23 @@ export default function JsonResourceEditor({
                         <div className="card-title">资源文件</div>
                         {loading ? <Spinner size="small" /> : fileList.length === 0 ? (
                             <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>暂无文件</div>
-                        ) : fileList.map(f => (
-                            <div key={f} className={`sidebar-link ${selectedFile === f ? "active" : ""}`} onClick={() => selectFile(f)}>
-                                <span style={{ flex: 1 }}>{f}</span>
-                                <Button appearance="subtle" size="small" icon={<Delete24Regular />}
-                                    onClick={(e) => { e.stopPropagation(); handleDeleteFile(f); }} style={{ color: "var(--danger-color)", minWidth: 24, padding: 2 }} />
+                        ) : (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                {fileList.map(f => (
+                                    <div key={f} className={`sidebar-link ${selectedFile === f ? "active" : ""}`} onClick={() => selectFile(f)}>
+                                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{f}</span>
+                                        <ConfirmPopover
+                                            message={`确定删除 "${f}"？`}
+                                            onConfirm={() => handleDeleteFile(f)}
+                                            confirmText="删除"
+                                        >
+                                            <Button appearance="subtle" size="small" icon={<Delete24Regular />}
+                                                style={{ color: "var(--danger-color)" }} />
+                                        </ConfirmPopover>
+                                    </div>
+                                ))}
                             </div>
-                        ))}
+                        )}
                     </div>
                 </div>
 
@@ -192,7 +202,7 @@ export default function JsonResourceEditor({
                         <DialogContent>
                             <div className="form-group">
                                 <label className="form-label">文件名</label>
-                                <Input value={newFileName} onChange={(_, d) => setNewFileName(d.value)} placeholder="如 default" style={{ width: "100%" }} />
+                                <Input value={newFileName} onChange={(_, d) => setNewFileName(d.value)} placeholder="输入文件名称" style={{ width: "100%" }} />
                             </div>
                         </DialogContent>
                         <DialogActions>

@@ -8,9 +8,8 @@ import {
   Input,
   Label,
   Spinner,
-  MessageBar,
-  MessageBarBody,
 } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
 
 export default function LoginPage() {
   const { loginWithPassword, passwordInitialized } = useAuth();
@@ -60,11 +59,11 @@ export default function LoginPage() {
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/icon.svg"
-            alt="MINI ClassIsland Logo"
+            alt="MINI ClassIsland STE Logo"
             style={{ width: 64, height: 64, marginBottom: 12, display: "block" }}
           />
           <div className="login-title" style={{ margin: 0 }}>
-            欢迎来到 MINI ClassIsland
+            欢迎来到 MINI ClassIsland STE
           </div>
         </div>
         <div className="login-subtitle">
@@ -120,23 +119,6 @@ export default function LoginPage() {
             {loading ? <Spinner size="tiny" /> : "登录"}
           </Button>
         </form>
-
-        <div
-          style={{
-            marginTop: 32,
-            paddingTop: 16,
-            borderTop: "1px solid var(--border-color)",
-            textAlign: "center",
-            fontSize: 11,
-            color: "var(--text-secondary)",
-            lineHeight: 1.6,
-          }}
-        >
-          <div>
-            本项目与 ClassIsland 官方无关，ClassIsland 是由 ClassIsland 社区开发和维护的开源软件
-          </div>
-          <div>本项目由 MINIOpenSource 开发和维护，并开源在 GitHub</div>
-        </div>
       </div>
     </div>
   );

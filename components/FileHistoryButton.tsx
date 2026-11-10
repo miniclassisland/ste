@@ -19,9 +19,8 @@ import {
     DialogTitle,
     DialogContent,
     DialogActions,
-    MessageBar,
-    MessageBarBody,
 } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
 import {
     History24Regular,
     Eye24Regular,

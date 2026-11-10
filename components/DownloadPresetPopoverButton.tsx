@@ -124,7 +124,7 @@ export default function DownloadPresetPopoverButton({
                                     style={{
                                         fontSize: 11,
                                         padding: "4px 8px",
-                                        borderRadius: 4,
+                                        borderRadius: "var(--radius-sm)",
                                         border: isSelected
                                             ? "1px solid var(--accent-color)"
                                             : "1px solid var(--border-color)",

@@ -14,6 +14,8 @@ export async function GET(request: Request) {
   return NextResponse.json(preset, {
     headers: {
       "Content-Disposition": 'attachment; filename="ManagementPreset.json"',
+      "X-MiniClassIsland-Server": "miniclassisland-ste",
+      "X-Server-Flavor": "miniclassisland-ste",
     },
   });
 }

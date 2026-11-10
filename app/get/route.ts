@@ -11,7 +11,12 @@ export async function GET(request: Request) {
       return NextResponse.json({ detail: "Missing token" }, { status: 403 });
     }
     const content = consumeDownloadToken(token);
-    return NextResponse.json(content);
+    return NextResponse.json(content, {
+      headers: {
+        "X-MiniClassIsland-Server": "miniclassisland-ste",
+        "X-Server-Flavor": "miniclassisland-ste",
+      },
+    });
   } catch (err) {
     return NextResponse.json(
       { detail: err instanceof Error ? err.message : "Invalid or expired download token" },

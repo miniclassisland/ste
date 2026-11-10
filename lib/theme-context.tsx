@@ -4,7 +4,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import {
     WeatherSunny20Regular,
     WeatherMoon20Regular,
-    Desktop20Regular,
+    DarkTheme20Regular,
 } from "@fluentui/react-icons";
 
 export type ThemeMode = "system" | "light" | "dark";
@@ -108,49 +108,21 @@ export function useThemeMode() {
 }
 
 export const THEME_MODE_LABELS: Record<ThemeMode, string> = {
-    system: "自动深色 (跟随系统)",
+    system: "自动深色",
     light: "浅色模式",
     dark: "深色模式",
 };
 
 /**
- * 主题切换组件：支持三种模式（自动跟随系统 / 浅色 / 深色）一键切换或分段切换。
+ * 主题切换组件：三个仅图标分段按钮并排切换（自动跟随系统 / 浅色 / 深色）。
  */
 export function ThemeModeToggle({
     floating = false,
-    compact = false,
 }: {
     floating?: boolean;
     compact?: boolean;
 }) {
-    const { mode, resolvedTheme, setMode, cycleMode } = useThemeMode();
-
-    if (compact) {
-        return (
-            <button
-                type="button"
-                onClick={cycleMode}
-                className="theme-toggle-btn"
-                title={`当前外观：${THEME_MODE_LABELS[mode]}（实际：${resolvedTheme === "dark" ? "深色" : "浅色"}），点击切换`}
-                aria-label="切换主题模式"
-            >
-                {mode === "system" ? (
-                    <Desktop20Regular />
-                ) : mode === "dark" ? (
-                    <WeatherMoon20Regular />
-                ) : (
-                    <WeatherSunny20Regular />
-                )}
-                <span>
-                    {mode === "system"
-                        ? `自动 (${resolvedTheme === "dark" ? "深色" : "浅色"})`
-                        : mode === "dark"
-                        ? "深色"
-                        : "浅色"}
-                </span>
-            </button>
-        );
-    }
+    const { mode, setMode } = useThemeMode();
 
     return (
         <div
@@ -162,28 +134,34 @@ export function ThemeModeToggle({
                 type="button"
                 className={`theme-segment-btn ${mode === "system" ? "active" : ""}`}
                 onClick={() => setMode("system")}
-                title="自动深色（跟随系统颜色偏好）"
+                title="自动深色"
+                aria-label="自动深色"
+                aria-pressed={mode === "system"}
+                style={{ width: 28, padding: 0 }}
             >
-                <Desktop20Regular style={{ width: 15, height: 15 }} />
-                <span>自动</span>
+                <DarkTheme20Regular style={{ width: 16, height: 16 }} />
             </button>
             <button
                 type="button"
                 className={`theme-segment-btn ${mode === "light" ? "active" : ""}`}
                 onClick={() => setMode("light")}
                 title="浅色模式"
+                aria-label="浅色模式"
+                aria-pressed={mode === "light"}
+                style={{ width: 28, padding: 0 }}
             >
-                <WeatherSunny20Regular style={{ width: 15, height: 15 }} />
-                <span>浅色</span>
+                <WeatherSunny20Regular style={{ width: 16, height: 16 }} />
             </button>
             <button
                 type="button"
                 className={`theme-segment-btn ${mode === "dark" ? "active" : ""}`}
                 onClick={() => setMode("dark")}
                 title="深色模式"
+                aria-label="深色模式"
+                aria-pressed={mode === "dark"}
+                style={{ width: 28, padding: 0 }}
             >
-                <WeatherMoon20Regular style={{ width: 15, height: 15 }} />
-                <span>深色</span>
+                <WeatherMoon20Regular style={{ width: 16, height: 16 }} />
             </button>
         </div>
     );

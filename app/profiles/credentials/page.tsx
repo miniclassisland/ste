@@ -7,10 +7,11 @@ import type { ManagementCredentialConfig, AuthorizeLevel } from "@/lib/types";
 import { AUTHORIZE_LEVEL_LABELS } from "@/lib/types";
 import {
     Button, Input, Spinner,
-    MessageBar, MessageBarBody,
     Dialog, DialogSurface, DialogBody, DialogTitle, DialogContent, DialogActions,
 } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
 import { Select } from "@/components/CustomSelect";
+import { ConfirmPopover } from "@/components/ConfirmPopover";
 import {
     Add24Regular, Delete24Regular, Save24Regular, ArrowSync24Regular,
     Key24Regular, Code24Regular,
@@ -66,20 +67,23 @@ export default function CredentialsPage() {
     }, [accountId]);
 
     const loadFiles = useCallback(async () => {
+        if (!accountId) {
+            setLoading(false);
+            return;
+        }
         setLoading(true);
-        if (!accountId) return;
         try {
             const list = await data.list(accountId, "Credentials");
             const arr = Array.isArray(list) ? list : [];
             setFileList(arr);
-            if (arr.length > 0 && !selectedFile) {
+            if (arr.length > 0 && (!selectedFile || !arr.includes(selectedFile))) {
                 selectFile(arr[0]);
             }
         } catch {
             setFileList([]);
         }
         setLoading(false);
-    }, [accountId, selectedFile, selectFile]);
+    }, [accountId, selectFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         loadFiles();
@@ -150,7 +154,6 @@ export default function CredentialsPage() {
     }
 
     async function handleDeleteFile(name: string) {
-        if (!confirm(`确定删除 "${name}"？`)) return;
         try {
             await data.deleteData(accountId, "Credentials", name);
             if (selectedFile === name) setSelectedFile(null);
@@ -192,25 +195,29 @@ export default function CredentialsPage() {
                         {loading ? (
                             <Spinner size="small" />
                         ) : (
-                            fileList.map((f) => (
-                                <div
-                                    key={f}
-                                    className={`sidebar-link ${selectedFile === f ? "active" : ""}`}
-                                    onClick={() => selectFile(f)}
-                                >
-                                    <span style={{ flex: 1 }}>{f}</span>
-                                    <Button
-                                        appearance="subtle"
-                                        size="small"
-                                        icon={<Delete24Regular />}
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleDeleteFile(f);
-                                        }}
-                                        style={{ color: "var(--danger-color)", minWidth: 24, padding: 2 }}
-                                    />
-                                </div>
-                            ))
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                {fileList.map((f) => (
+                                    <div
+                                        key={f}
+                                        className={`sidebar-link ${selectedFile === f ? "active" : ""}`}
+                                        onClick={() => selectFile(f)}
+                                    >
+                                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{f}</span>
+                                        <ConfirmPopover
+                                            message={`确定删除 "${f}"？`}
+                                            onConfirm={() => handleDeleteFile(f)}
+                                            confirmText="删除"
+                                        >
+                                            <Button
+                                                appearance="subtle"
+                                                size="small"
+                                                icon={<Delete24Regular />}
+                                                style={{ color: "var(--danger-color)" }}
+                                            />
+                                        </ConfirmPopover>
+                                    </div>
+                                ))}
+                            </div>
                         )}
                     </div>
                 </div>
@@ -394,7 +401,7 @@ export default function CredentialsPage() {
                                     <Input
                                         value={newFileName}
                                         onChange={(_, d) => setNewFileName(d.value)}
-                                        placeholder="如 default"
+                                        placeholder="输入文件名称"
                                         style={{ width: "100%" }}
                                     />
                                 </div>

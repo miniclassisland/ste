@@ -26,6 +26,7 @@ import {
   verifyGrpcSession,
   handleGrpcClientRegister,
   handleGrpcClientUnRegister,
+  markClientExtendEnabled,
   registerClientStreamListener,
   touchClientLastSeen,
   saveClientConfigUpload,
@@ -56,6 +57,8 @@ import {
   enableClientDevice,
   deleteClientDevice,
   restartClientDevice,
+  setClientAppLock,
+  getAggregatedPluginComponents,
   forceSyncClientDevice,
   disconnectClientSession,
   sendNotificationToClient,
@@ -279,9 +282,15 @@ export async function dispatchManagementAction(
     case "clients.enable":
       return enableClientDevice(String(payload.client_uid));
     case "clients.delete":
-      return deleteClientDevice(String(payload.client_uid));
+      return await deleteClientDevice(String(payload.client_uid));
     case "clients.restart":
       return restartClientDevice(String(payload.client_uid));
+    case "clients.lock":
+      return await setClientAppLock(String(payload.client_uid), true);
+    case "clients.unlock":
+      return await setClientAppLock(String(payload.client_uid), false);
+    case "clients.getPluginComponents":
+      return getAggregatedPluginComponents();
     case "clients.forceSync":
       return forceSyncClientDevice(String(payload.client_uid));
     case "clients.disconnect":
@@ -298,11 +307,23 @@ export async function dispatchManagementAction(
         payload.target_client_uids as string[] | undefined
       );
     case "clients.batch":
-      return batchClientsAction(
+      return await batchClientsAction(
         payload.body as {
           client_uids: string[];
-          action: "force_sync" | "restart" | "disconnect" | "enable" | "disable" | "delete" | "assign_profile";
+          action:
+            | "force_sync"
+            | "restart"
+            | "disconnect"
+            | "enable"
+            | "disable"
+            | "delete"
+            | "remove"
+            | "lock"
+            | "unlock"
+            | "send_notification"
+            | "assign_profile";
           profile_config?: ClientProfileConfig;
+          notification?: NotificationPayload | null;
         }
       );
     case "clients.getConfig":
@@ -491,7 +512,8 @@ export function registerConnectRoutes(router: ConnectRouter): void {
 
     async unRegister(req, ctx) {
       const clientUid = (req.ClientUid || getMeta(ctx, "cuid")).trim();
-      const res = handleGrpcClientUnRegister(clientUid);
+      const clientMac = (req.ClientMac || "").trim();
+      const res = await handleGrpcClientUnRegister(clientUid, clientMac);
       return create(ClientRegisterScRspSchema, {
         Retcode: res.retcode,
         Message: res.message,
@@ -505,6 +527,10 @@ export function registerConnectRoutes(router: ConnectRouter): void {
       const clientUid = getMeta(ctx, "cuid");
       const sessionToken = getMeta(ctx, "session");
       const peerIp = getPeerIp(ctx);
+      const extHeader = getMeta(ctx, "x-extend-management-enabled").toLowerCase();
+      if (extHeader === "1" || extHeader === "true" || extHeader === "yes") {
+        markClientExtendEnabled(clientUid, getMeta(ctx, "x-extend-management-version"));
+      }
 
       if (!verifyGrpcSession(clientUid, sessionToken)) {
         yield create(ClientCommandDeliverScRspSchema, {
@@ -610,6 +636,9 @@ export function registerConnectRoutes(router: ConnectRouter): void {
       }
 
       const ok = saveClientConfigUpload(reqGuid, req.Payload || "");
+      if (ok && (req.Payload || "").includes('"action"')) {
+        markClientExtendEnabled(clientUid, getMeta(ctx, "x-extend-management-version"));
+      }
       if (!ok) {
         return create(ConfigUploadScRspSchema, {
           Retcode: Retcode.InvalidRequest,

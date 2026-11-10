@@ -19,7 +19,8 @@ export async function GET(
     const status = await pollClientPairingStatus(client_uid, code, classId, mac, clientIp);
     return NextResponse.json(status, {
       headers: {
-        "X-MiniClassIsland-Server": "ste",
+        "X-MiniClassIsland-Server": "miniclassisland-ste",
+        "X-Server-Flavor": "miniclassisland-ste",
       },
     });
   } catch (err) {
@@ -28,7 +29,8 @@ export async function GET(
       {
         status: 500,
         headers: {
-          "X-MiniClassIsland-Server": "ste",
+          "X-MiniClassIsland-Server": "miniclassisland-ste",
+          "X-Server-Flavor": "miniclassisland-ste",
         },
       }
     );

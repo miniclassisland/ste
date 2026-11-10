@@ -12,9 +12,8 @@ import {
   Button,
   Input,
   Spinner,
-  MessageBar,
-  MessageBarBody,
 } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
 
 interface LoginDialogProps {
   open: boolean;

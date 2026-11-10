@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
-import { data } from "@/lib/api";
+import { data, clients } from "@/lib/api";
 import { useAccount } from "@/lib/account-context";
 import type {
     ComponentProfile,
@@ -9,6 +9,8 @@ import type {
     ComponentSettingsItem,
     HorizontalAlignmentType,
     BuiltinComponentMeta,
+    PluginComponentItem,
+    ClientDeviceOut,
 } from "@/lib/types";
 import {
     HORIZONTAL_ALIGNMENT_LABELS,
@@ -17,10 +19,11 @@ import {
 } from "@/lib/types";
 import {
     Button, Input, Switch, Spinner, Textarea,
-    MessageBar, MessageBarBody,
     Dialog, DialogSurface, DialogBody, DialogTitle, DialogContent, DialogActions,
 } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
 import { Select } from "@/components/CustomSelect";
+import { ConfirmPopover } from "@/components/ConfirmPopover";
 import {
     Add24Regular, Delete24Regular, Save24Regular, ArrowSync24Regular,
     ArrowUp24Regular, ArrowDown24Regular, ArrowLeft24Regular, ArrowRight24Regular,
@@ -172,6 +175,9 @@ export default function ComponentsPage() {
     const [jsonText, setJsonText] = useState("{}");
     const [customAddGuid, setCustomAddGuid] = useState("");
     const [customAddName, setCustomAddName] = useState("");
+    const [pluginComponents, setPluginComponents] = useState<PluginComponentItem[]>([]);
+    const [onlineExtendClients, setOnlineExtendClients] = useState<ClientDeviceOut[]>([]);
+    const [syncingPluginComponents, setSyncingPluginComponents] = useState(false);
 
     const [loading, setLoading] = useState(true);
     const [dataLoading, setDataLoading] = useState(false);
@@ -206,24 +212,68 @@ export default function ComponentsPage() {
     }, [accountId]);
 
     const loadFiles = useCallback(async () => {
+        if (!accountId) {
+            setLoading(false);
+            return;
+        }
         setLoading(true);
-        if (!accountId) return;
         try {
             const list = await data.list(accountId, "Components");
             const arr = Array.isArray(list) ? list : [];
             setFileList(arr);
-            if (arr.length > 0 && !selectedFile) {
+            if (arr.length > 0 && (!selectedFile || !arr.includes(selectedFile))) {
                 selectFile(arr[0]);
             }
         } catch {
             setFileList([]);
         }
         setLoading(false);
-    }, [accountId, selectedFile, selectFile]);
+    }, [accountId, selectFile]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const loadPluginComponentsCatalog = useCallback(async () => {
+        if (!accountId) return;
+        try {
+            const [res, devList] = await Promise.all([
+                clients.getPluginComponents(accountId).catch(() => ({ components: [] as PluginComponentItem[] })),
+                clients.list(accountId).catch(() => [] as ClientDeviceOut[]),
+            ]);
+            setPluginComponents(Array.isArray(res?.components) ? res.components : []);
+            const onlineExt = (Array.isArray(devList) ? devList : []).filter(
+                (d) => d.status === "online" && d.extend_management_enabled
+            );
+            setOnlineExtendClients(onlineExt);
+        } catch {
+            setPluginComponents([]);
+        }
+    }, [accountId]);
 
     useEffect(() => {
         loadFiles();
-    }, [loadFiles]);
+        loadPluginComponentsCatalog();
+    }, [loadFiles, loadPluginComponentsCatalog]);
+
+    async function handleSyncPluginComponentsFromClient() {
+        if (!accountId) return;
+        setSyncingPluginComponents(true);
+        try {
+            if (onlineExtendClients.length > 0) {
+                await Promise.all(
+                    onlineExtendClients.map((c) =>
+                        clients.sendExtendCommand(
+                            accountId,
+                            c.uid,
+                            "plugin.list_components"
+                        ).catch(() => null)
+                    )
+                );
+            }
+            await loadPluginComponentsCatalog();
+            setMsg({ type: "success", text: "已刷新客户端上报的第三方组件清单" });
+        } catch (err: unknown) {
+            setMsg({ type: "error", text: err instanceof Error ? err.message : "获取组件清单失败" });
+        }
+        setSyncingPluginComponents(false);
+    }
 
     async function handleSave() {
         if (!selectedFile) return;
@@ -267,7 +317,6 @@ export default function ComponentsPage() {
     }
 
     async function handleDelete(name: string) {
-        if (!confirm(`确定删除组件配置 "${name}" 吗？`)) return;
         try {
             await data.deleteData(accountId, "Components", name);
             if (selectedFile === name) {
@@ -568,16 +617,16 @@ export default function ComponentsPage() {
                                         onChange={(_, d) => updateCurrentCompSettings({ ExtraInfoType: parseInt(d.value, 10) })}
                                     >
                                         <option value="0">时间点持续时间</option>
-                                        <option value="1">已过时间 / 持续时间 (分)</option>
-                                        <option value="2">剩余时间 / 持续时间 (分)</option>
-                                        <option value="3">已过时间百分比 (%)</option>
+                                        <option value="1">已过时间与持续时间</option>
+                                        <option value="2">剩余时间与持续时间</option>
+                                        <option value="3">已过时间百分比</option>
                                         <option value="4">剩余时间</option>
                                         <option value="5">倒计时</option>
                                     </Select>
                                 </div>
                                 {Number(s.ExtraInfoType ?? 0) === 4 && (
                                     <div className="form-group" style={{ marginBottom: 0 }}>
-                                        <label className="form-label">剩余时间小于等于多少秒时显示秒数 (秒)</label>
+                                        <label className="form-label">显示精确倒计时秒数阈值</label>
                                         <Input
                                             type="number"
                                             value={String(s.ExtraInfo4ShowSecondsSeconds ?? 0)}
@@ -601,7 +650,7 @@ export default function ComponentsPage() {
                         {s.IsCountdownEnabled !== false && (
                             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "center" }}>
                                 <div className="form-group" style={{ marginBottom: 0 }}>
-                                    <label className="form-label">倒计时触发时长 (秒)</label>
+                                    <label className="form-label">倒计时触发时长</label>
                                     <Input
                                         type="number"
                                         value={String(s.CountdownSeconds ?? 60)}
@@ -609,7 +658,7 @@ export default function ComponentsPage() {
                                     />
                                 </div>
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18 }}>
-                                    <span style={{ fontSize: 13 }}>使用非精确倒计时</span>
+                                    <span style={{ fontSize: 13 }}>使用模糊倒计时</span>
                                     <Switch
                                         checked={!!s.IsNonExactCountdownEnabled}
                                         onChange={(_, d) => updateCurrentCompSettings({ IsNonExactCountdownEnabled: d.checked })}
@@ -772,11 +821,11 @@ export default function ComponentsPage() {
                                 onChange={(_, d) => updateCurrentCompSettings({ MainWeatherInfoKind: parseInt(d.value, 10) })}
                             >
                                 <option value="0">天气状况与气温</option>
-                                <option value="1">相对湿度 (%)</option>
+                                <option value="1">相对湿度</option>
                                 <option value="2">风向与风力</option>
                                 <option value="3">空气质量指数</option>
                                 <option value="4">大气压强</option>
-                                <option value="5">体感温度 (℃)</option>
+                                <option value="5">体感温度</option>
                             </Select>
                         </div>
                     )}
@@ -797,8 +846,8 @@ export default function ComponentsPage() {
                                 value={String(s.AlertsTitleShowMode ?? 1)}
                                 onChange={(_, d) => updateCurrentCompSettings({ AlertsTitleShowMode: parseInt(d.value, 10) })}
                             >
-                                <option value="0">不显示文字标题（仅显示图标）</option>
-                                <option value="1">仅当没有对应预警图标时显示文字</option>
+                                <option value="0">仅显示图标</option>
+                                <option value="1">仅在没有对应图标时显示文字</option>
                                 <option value="2">总是显示预警文字标题</option>
                             </Select>
                         </div>
@@ -862,7 +911,7 @@ export default function ComponentsPage() {
                         {source === 0 && (
                             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                                 <div className="form-group" style={{ marginBottom: 0 }}>
-                                    <label className="form-label">开始时间（用于计算进度）</label>
+                                    <label className="form-label">开始时间</label>
                                     <Input
                                         type="datetime-local"
                                         value={extractDateInput(s.StartTime)}
@@ -900,7 +949,7 @@ export default function ComponentsPage() {
                                     </div>
                                 </div>
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                    <span style={{ fontSize: 13 }}>启用高级周期计时（前置/后置间隔与次数限制）</span>
+                                    <span style={{ fontSize: 13 }}>启用高级周期计时</span>
                                     <Switch
                                         checked={!!s.IsAdvancedCycleTimingEnabled}
                                         onChange={(_, d) => updateCurrentCompSettings({ IsAdvancedCycleTimingEnabled: d.checked })}
@@ -944,13 +993,13 @@ export default function ComponentsPage() {
                         {(source === 2 || source === 3) && (
                             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                                 <div className="form-group" style={{ marginBottom: 0 }}>
-                                    <label className="form-label">自然时间/课程时间模式</label>
+                                    <label className="form-label">时间计算模式</label>
                                     <Select
                                         value={String(s.NatureTimeUseMode ?? 0)}
                                         onChange={(_, d) => updateCurrentCompSettings({ NatureTimeUseMode: parseInt(d.value, 10) })}
                                     >
-                                        <option value="0">自动（优先遵循当日课表起止时间）</option>
-                                        <option value="1">强制使用自然日/自然周时间</option>
+                                        <option value="0">优先遵循当日课表起止时间</option>
+                                        <option value="1">强制使用自然时间</option>
                                         <option value="2">强制仅使用课表上下学时间</option>
                                     </Select>
                                 </div>
@@ -986,7 +1035,7 @@ export default function ComponentsPage() {
                                 <Input
                                     value={String(s.CountDownConnector ?? "还有")}
                                     onChange={(_, d) => updateCurrentCompSettings({ CountDownConnector: d.value })}
-                                    placeholder="如：还有 / 距离"
+                                    placeholder="输入连接词文本"
                                 />
                             </div>
                             <div className="form-group" style={{ marginBottom: 0 }}>
@@ -994,11 +1043,8 @@ export default function ComponentsPage() {
                                 <Input
                                     value={String(s.CustomStringFormat ?? "%D天")}
                                     onChange={(_, d) => updateCurrentCompSettings({ CustomStringFormat: d.value })}
-                                    placeholder="%D天 %H时 %M分 %S秒 (%P%)"
+                                    placeholder="输入时间格式化模板"
                                 />
-                                <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
-                                    支持变量：%D(总天数) %H(总小时) %M(总分钟) %S(总秒) %h/%m/%s(余数时分秒) %P/%p(进度百分比)
-                                </div>
                             </div>
                         </div>
 
@@ -1145,7 +1191,7 @@ export default function ComponentsPage() {
                     <div className="settings-section-title" style={{ marginBottom: 0 }}>轮播容器设置</div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                         <div className="form-group" style={{ marginBottom: 0 }}>
-                            <label className="form-label">轮播间隔时长 (秒)</label>
+                            <label className="form-label">轮播间隔秒数</label>
                             <Input
                                 type="number"
                                 value={String(s.SlideSeconds ?? 15)}
@@ -1218,7 +1264,7 @@ export default function ComponentsPage() {
                     {s.IsPauseEnabled !== false && (
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                             <div className="form-group" style={{ marginBottom: 0 }}>
-                                <label className="form-label">暂停停留时长 (秒)</label>
+                                <label className="form-label">暂停停留秒数</label>
                                 <Input
                                     type="number"
                                     value={String(s.PauseSeconds ?? 10)}
@@ -1258,8 +1304,8 @@ export default function ComponentsPage() {
             <div className="card" style={{ padding: 16, marginBottom: 0, display: "flex", flexDirection: "column", gap: 10 }}>
                 <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
                     {meta && !meta.hasSettings
-                        ? `“${meta.name}”组件没有专属功能设置项（可在“高级设置”标签页配置外观、字体与边距${meta.isContainer ? "，或点击上方“管理子组件”编辑内部组件" : ""}）。`
-                        : "自定义/插件组件专属设置 JSON："}
+                        ? `“${meta.name}”组件没有专属功能设置项，可在高级设置标签页配置外观、字体与边距。`
+                        : "第三方插件组件设置："}
                 </div>
                 <Textarea
                     rows={5}
@@ -1272,7 +1318,7 @@ export default function ComponentsPage() {
                             // 允许正在输入中的半成品 JSON
                         }
                     }}
-                    placeholder="无附加 Settings 或输入 JSON 对象"
+                    placeholder="输入组件设置内容"
                     style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
                 />
             </div>
@@ -1287,8 +1333,8 @@ export default function ComponentsPage() {
         <div className="fade-in">
             <div className="page-header">
                 <div>
-                    <h1 className="page-title">组件布局配置</h1>
-                    <p className="page-subtitle">原位对照 ClassIsland 客户端【设置 → 组件】多行视图、容器子组件栈、组件专属设置与高级布局覆盖</p>
+                    <h1 className="page-title">组件</h1>
+                    <p className="page-subtitle">配置客户端主界面多行组件布局、容器子组件与组件专属设置</p>
                 </div>
                 <div className="flex gap-8" style={{ flexWrap: "wrap" }}>
                     <Button appearance="primary" icon={<Add24Regular />} onClick={() => setShowCreate(true)}>新建配置</Button>
@@ -1307,13 +1353,13 @@ export default function ComponentsPage() {
                                         type: "success",
                                         text: isCurrent
                                             ? `已加载当前最新版本 v${version}`
-                                            : `已加载历史版本 v${version} 到编辑器（点击「保存」将创建一个新版本）`,
+                                            : `已加载历史版本 v${version} 到编辑器`,
                                     });
                                 }}
                                 onError={(text) => setMsg({ type: "error", text })}
                             />
                             <DownloadPresetPopoverButton
-                                buttonText="导出 JSON"
+                                buttonText="导出"
                                 appearance="secondary"
                                 defaultFileName={`Components-${selectedFile}.json`}
                                 suggestedNames={[
@@ -1332,7 +1378,7 @@ export default function ComponentsPage() {
                                     setJsonMode(!jsonMode);
                                 }}
                             >
-                                {jsonMode ? "可视化模式" : "JSON 模式"}
+                                {jsonMode ? "可视化模式" : "源码模式"}
                             </Button>
                             <Button appearance="secondary" icon={<ArrowSync24Regular />} onClick={() => selectFile(selectedFile)}>刷新</Button>
                             <Button appearance="primary" icon={<Save24Regular />} onClick={handleSave} disabled={saving}>
@@ -1357,7 +1403,6 @@ export default function ComponentsPage() {
                 </MessageBar>
             )}
 
-            {/* 顶部组件配置文件切换条（使主界面组件行视图与下方四标签面板获得 100% 宽度） */}
             <div className="card" style={{ padding: "12px 16px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>组件配置文件：</span>
@@ -1384,14 +1429,19 @@ export default function ComponentsPage() {
                                 }}
                             >
                                 <span>{f}</span>
-                                <Button
-                                    size="small"
-                                    appearance="subtle"
-                                    icon={<Delete24Regular />}
-                                    onClick={(e) => { e.stopPropagation(); handleDelete(f); }}
-                                    style={{ color: "var(--danger-color)", minWidth: 22, height: 22, padding: 2 }}
-                                    title="删除此组件配置文件"
-                                />
+                                <ConfirmPopover
+                                    message={`确定删除组件配置 "${f}" 吗？`}
+                                    onConfirm={() => handleDelete(f)}
+                                    confirmText="删除"
+                                >
+                                    <Button
+                                        size="small"
+                                        appearance="subtle"
+                                        icon={<Delete24Regular />}
+                                        style={{ color: "var(--danger-color)" }}
+                                        title="删除此组件配置文件"
+                                    />
+                                </ConfirmPopover>
                             </div>
                         ))
                     )}
@@ -1399,7 +1449,6 @@ export default function ComponentsPage() {
             </div>
 
             <div>
-                {/* 原位模拟上游 ComponentsSettingsPage 编辑器 */}
                 <div style={{ minWidth: 0 }}>
                     {!selectedFile ? (
                         <div className="card"><div className="empty-state"><div className="empty-state-text">请从上方选择或新建一个组件配置文件</div></div></div>
@@ -1407,7 +1456,7 @@ export default function ComponentsPage() {
                         <div className="card"><div className="empty-state"><Spinner size="medium" /></div></div>
                     ) : jsonMode ? (
                         <div className="card">
-                            <div className="card-title">JSON 编辑器 — {selectedFile}</div>
+                            <div className="card-title">源码编辑器 — {selectedFile}</div>
                             <div className="json-editor">
                                 <textarea
                                     value={jsonText}
@@ -1418,13 +1467,12 @@ export default function ComponentsPage() {
                         </div>
                     ) : (
                         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                            {/* ── 顶部：主界面行可视化预览区 (对应上游 ListBoxMainWindowLines) ── */}
                             <div className="card" style={{ padding: 16, marginBottom: 0, display: "flex", flexDirection: "column", gap: 12 }}>
-                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                                         <span style={{ fontWeight: 600, fontSize: 14 }}>主界面组件行视图</span>
                                         <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                                            共 {lines.length} 行 · 点击行内组件可直接编辑，双击容器组件可展开子组件
+                                            共 {lines.length} 行 · 点击组件即可编辑
                                         </span>
                                     </div>
                                     <Button size="small" icon={<Add24Regular />} onClick={() => addLineBelow(selectedLineIdx)}>
@@ -1448,6 +1496,7 @@ export default function ComponentsPage() {
                                                 style={{
                                                     display: "flex",
                                                     alignItems: "center",
+                                                    flexWrap: "wrap",
                                                     gap: 10,
                                                     padding: "10px 12px",
                                                     borderRadius: 10,
@@ -1481,16 +1530,15 @@ export default function ComponentsPage() {
                                                     </div>
                                                 </div>
 
-                                                {/* 水平排列的组件胶囊条 (模拟客户端顶栏效果) */}
                                                 <div
                                                     style={{
-                                                        flex: 1,
+                                                        flex: "1 1 220px",
                                                         display: "flex",
                                                         alignItems: "center",
+                                                        flexWrap: "wrap",
                                                         gap: 8,
-                                                        overflowX: "auto",
                                                         padding: "6px 10px",
-                                                        borderRadius: 999,
+                                                        borderRadius: 12,
                                                         background: "var(--bg-card)",
                                                         border: "1px solid var(--border-color)",
                                                         minHeight: 42,
@@ -1687,8 +1735,8 @@ export default function ComponentsPage() {
                                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                                     <span style={{ fontSize: 13, fontWeight: 600 }}>
                                         {currentComp
-                                            ? `当前选中：${currentComp.NameCache || currentCompMeta?.name || "组件"} (${containerStack.length > 0 ? `${containerStack[containerStack.length - 1].title} 内部` : `第 ${selectedLineIdx + 1} 行`} #${selectedCompIdx + 1})`
-                                            : `当前作用域：${containerStack.length > 0 ? `容器「${containerStack[containerStack.length - 1].title}」` : `第 ${selectedLineIdx + 1} 行`}（未选中组件）`}
+                                            ? `当前选中：${currentComp.NameCache || currentCompMeta?.name || "组件"} · ${containerStack.length > 0 ? `${containerStack[containerStack.length - 1].title} 内部` : `第 ${selectedLineIdx + 1} 行`} #${selectedCompIdx + 1}`
+                                            : `当前作用域：${containerStack.length > 0 ? `容器「${containerStack[containerStack.length - 1].title}」` : `第 ${selectedLineIdx + 1} 行`} · 未选中组件`}
                                     </span>
                                 </div>
                                 {currentComp && (
@@ -1704,7 +1752,7 @@ export default function ComponentsPage() {
                                             disabled={selectedCompIdx <= 0}
                                             onClick={() => moveComponent(selectedCompIdx, -1)}
                                         >
-                                            左移
+                                            前移
                                         </Button>
                                         <Button
                                             size="small"
@@ -1712,17 +1760,53 @@ export default function ComponentsPage() {
                                             disabled={selectedCompIdx >= activeChildren.length - 1}
                                             onClick={() => moveComponent(selectedCompIdx, 1)}
                                         >
-                                            右移
+                                            后移
                                         </Button>
+                                        {containerStack.length === 0 && lines.length > 1 && (
+                                            <Select
+                                                size="small"
+                                                value=""
+                                                onChange={(_, d) => {
+                                                    const targetLine = parseInt(d.value, 10);
+                                                    if (!isNaN(targetLine) && targetLine !== selectedLineIdx) {
+                                                        const compToMove = activeChildren[selectedCompIdx];
+                                                        if (!compToMove) return;
+                                                        setProfile((prev) => {
+                                                            const nextLines = prev.Lines.map((l, idx) => {
+                                                                if (idx === selectedLineIdx) {
+                                                                    return { ...l, Children: (l.Children || []).filter((_, i) => i !== selectedCompIdx) };
+                                                                }
+                                                                if (idx === targetLine) {
+                                                                    return { ...l, Children: [...(l.Children || []), compToMove] };
+                                                                }
+                                                                return l;
+                                                            });
+                                                            return { ...prev, Lines: nextLines };
+                                                        });
+                                                        setSelectedLineIdx(targetLine);
+                                                        setSelectedCompIdx(lines[targetLine]?.Children?.length || 0);
+                                                    }
+                                                }}
+                                                style={{ width: 130 }}
+                                            >
+                                                <option value="">移至其他行...</option>
+                                                {lines.map((_, idx) => (
+                                                    idx !== selectedLineIdx ? (
+                                                        <option key={idx} value={String(idx)}>移至第 {idx + 1} 行</option>
+                                                    ) : null
+                                                ))}
+                                            </Select>
+                                        )}
                                         <Button size="small" icon={<Copy24Regular />} onClick={() => duplicateComponent(selectedCompIdx)}>
                                             创建副本
                                         </Button>
                                         <Select
+                                            size="small"
                                             value=""
                                             onChange={(_, d) => {
                                                 if (d.value) wrapInContainer(selectedCompIdx, d.value);
                                             }}
-                                            style={{ width: 165 }}
+                                            style={{ width: 155 }}
                                         >
                                             <option value="">包裹到新容器...</option>
                                             <option value="c911d762-107f-40c6-84cc-0146ab3c86b1">包裹到分组容器</option>
@@ -1743,8 +1827,7 @@ export default function ComponentsPage() {
                                 )}
                             </div>
 
-                            {/* ── 底部四标签页切换器 (严格对应上游 ComponentsSettingsPage 底部 TabControl: 组件库 / 组件设置 / 高级设置 / 行设置) ── */}
-                            <div className="tab-bar" style={{ marginBottom: 4 }}>
+                            <div className="tab-bar" style={{ marginBottom: 4, paddingBottom: 12, gap: 8, flexWrap: "wrap" }}>
                                 <Button
                                     appearance={activeTab === "library" ? "primary" : "subtle"}
                                     icon={<Apps24Regular />}
@@ -1771,11 +1854,10 @@ export default function ComponentsPage() {
                                     icon={<TextAlignDistributed24Regular />}
                                     onClick={() => setActiveTab("line")}
                                 >
-                                    行设置 (第 {selectedLineIdx + 1} 行)
+                                    行设置 · 第 {selectedLineIdx + 1} 行
                                 </Button>
                             </div>
 
-                            {/* ── Tab 1: 组件库 (BUILTIN_COMPONENTS + 自定义 GUID) ── */}
                             {activeTab === "library" && (
                                 <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                                     <div style={{ fontSize: 12.5, color: "var(--text-secondary)" }}>
@@ -1811,40 +1893,105 @@ export default function ComponentsPage() {
                                                     <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.4 }}>{bc.desc}</div>
                                                 </div>
                                                 <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginTop: 4 }}>
-                                                    <span style={{ fontSize: 12, color: "var(--accent-color)", fontWeight: 600 }}>+ 添加</span>
+                                                    <span style={{ fontSize: 12, color: "var(--accent-color)", fontWeight: 600 }}>添加</span>
                                                 </div>
                                             </div>
                                         ))}
                                     </div>
 
-                                    <div className="card" style={{ padding: 14, marginBottom: 0, display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
-                                        <div className="form-group" style={{ marginBottom: 0, flex: 1, minWidth: 220 }}>
-                                            <label className="form-label">第三方插件组件 GUID</label>
-                                            <Input
-                                                value={customAddGuid}
-                                                onChange={(_, d) => setCustomAddGuid(d.value)}
-                                                placeholder="输入插件注册的组件 GUID..."
-                                            />
+                                    {/* 第三方插件组件列表（从客户端获取） */}
+                                    <div className="card" style={{ padding: 14, marginBottom: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                                            <div>
+                                                <div style={{ fontWeight: 600, fontSize: 13.5 }}>客户端第三方插件组件</div>
+                                                <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                                                    自动汇总已接入增强集控客户端上报的第三方组件清单
+                                                </div>
+                                            </div>
+                                            <Button
+                                                size="small"
+                                                appearance="secondary"
+                                                icon={<ArrowSync24Regular />}
+                                                disabled={syncingPluginComponents}
+                                                onClick={handleSyncPluginComponentsFromClient}
+                                            >
+                                                {syncingPluginComponents ? "获取中..." : "从客户端获取"}
+                                            </Button>
                                         </div>
-                                        <div className="form-group" style={{ marginBottom: 0, width: 180 }}>
-                                            <label className="form-label">显示名称备注</label>
-                                            <Input
-                                                value={customAddName}
-                                                onChange={(_, d) => setCustomAddName(d.value)}
-                                                placeholder="自定义组件"
-                                            />
+
+                                        {pluginComponents.length === 0 ? (
+                                            <div style={{ fontSize: 12.5, color: "var(--text-tertiary)" }}>
+                                                暂无客户端上报的第三方组件，可点击右上角「从客户端获取」或在下方手动输入组件标识添加。
+                                            </div>
+                                        ) : (
+                                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
+                                                {pluginComponents.map((pc) => (
+                                                    <div
+                                                        key={pc.id}
+                                                        className="card"
+                                                        style={{
+                                                            padding: 12,
+                                                            marginBottom: 0,
+                                                            display: "flex",
+                                                            flexDirection: "column",
+                                                            justifyContent: "space-between",
+                                                            gap: 6,
+                                                            cursor: "pointer",
+                                                            border: pc.isComponentContainer ? "1px dashed var(--accent-color)" : "1px solid var(--border-color)",
+                                                        }}
+                                                        onClick={() => addComponent(pc.id, pc.name || pc.id)}
+                                                    >
+                                                        <div>
+                                                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                                                                <span style={{ fontWeight: 600, fontSize: 13 }}>{pc.name || pc.id}</span>
+                                                                <span className="badge badge-info" style={{ fontSize: 10, padding: "1px 6px" }}>插件</span>
+                                                            </div>
+                                                            {pc.description && (
+                                                                <div style={{ fontSize: 11.5, color: "var(--text-secondary)", lineHeight: 1.4 }}>
+                                                                    {pc.description}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                                                            <span style={{ fontSize: 11, color: "var(--text-tertiary)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 140 }}>
+                                                                {pc.id}
+                                                            </span>
+                                                            <span style={{ fontSize: 12, color: "var(--accent-color)", fontWeight: 600 }}>添加</span>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", borderTop: "1px solid var(--border-color)", paddingTop: 10 }}>
+                                            <div className="form-group" style={{ marginBottom: 0, flex: 1, minWidth: 200 }}>
+                                                <label className="form-label">手动输入第三方组件标识</label>
+                                                <Input
+                                                    value={customAddGuid}
+                                                    onChange={(_, d) => setCustomAddGuid(d.value)}
+                                                    placeholder="输入插件注册的组件标识"
+                                                />
+                                            </div>
+                                            <div className="form-group" style={{ marginBottom: 0, width: 180 }}>
+                                                <label className="form-label">显示名称备注</label>
+                                                <Input
+                                                    value={customAddName}
+                                                    onChange={(_, d) => setCustomAddName(d.value)}
+                                                    placeholder="自定义组件"
+                                                />
+                                            </div>
+                                            <Button
+                                                icon={<Add24Regular />}
+                                                disabled={!customAddGuid.trim()}
+                                                onClick={() => {
+                                                    addComponent(customAddGuid.trim(), customAddName.trim() || "自定义组件");
+                                                    setCustomAddGuid("");
+                                                    setCustomAddName("");
+                                                }}
+                                            >
+                                                添加插件组件
+                                            </Button>
                                         </div>
-                                        <Button
-                                            icon={<Add24Regular />}
-                                            disabled={!customAddGuid.trim()}
-                                            onClick={() => {
-                                                addComponent(customAddGuid.trim(), customAddName.trim() || "自定义组件");
-                                                setCustomAddGuid("");
-                                                setCustomAddName("");
-                                            }}
-                                        >
-                                            添加插件组件
-                                        </Button>
                                     </div>
                                 </div>
                             )}
@@ -2022,7 +2169,7 @@ export default function ComponentsPage() {
                                             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                                                 <div className="form-group" style={{ marginBottom: 0 }}>
                                                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                                                        <label className="form-label" style={{ marginBottom: 0 }}>自定义前景色 (文字颜色)</label>
+                                                        <label className="form-label" style={{ marginBottom: 0 }}>自定义前景色</label>
                                                         <Switch
                                                             checked={!!currentComp.IsCustomForegroundColorEnabled}
                                                             onChange={(_, d) => updateCurrentComp({ IsCustomForegroundColorEnabled: d.checked })}
@@ -2190,8 +2337,8 @@ export default function ComponentsPage() {
                                                 onChange={(_, d) => updateCurrentLine({ IslandSeparationMode: parseInt(d.value, 10) })}
                                             >
                                                 <option value="0">继承全局设置</option>
-                                                <option value="1">禁用分体模式 (合并为整条顶栏)</option>
-                                                <option value="2">启用分体模式 (各组件独立成岛)</option>
+                                                <option value="1">禁用分体模式</option>
+                                                <option value="2">启用分体模式</option>
                                             </Select>
                                         </div>
                                         <div className="form-group" style={{ marginBottom: 0 }}>
@@ -2333,7 +2480,7 @@ export default function ComponentsPage() {
                                 <Input
                                     value={newFileName}
                                     onChange={(_, d) => setNewFileName(d.value)}
-                                    placeholder="例如: default"
+                                    placeholder="输入配置名称"
                                 />
                             </div>
                         </DialogContent>

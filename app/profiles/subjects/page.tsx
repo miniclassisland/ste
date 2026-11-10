@@ -4,15 +4,17 @@ import React, { useState, useEffect, useCallback } from "react";
 import { data } from "@/lib/api";
 import { useAccount } from "@/lib/account-context";
 import type { Subject } from "@/lib/types";
-import { EMPTY_GUID, isEmptyGuid } from "@/lib/types";
+import { isEmptyGuid } from "@/lib/types";
 import {
     Button, Input, Switch, Spinner,
-    MessageBar, MessageBarBody,
     Dialog, DialogSurface, DialogBody, DialogTitle, DialogContent, DialogActions,
 } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
+import { ConfirmPopover } from "@/components/ConfirmPopover";
 import {
     Add24Regular, Delete24Regular, Save24Regular, ArrowSync24Regular,
     ArrowUp24Regular, ArrowDown24Regular, Code24Regular, DismissCircle24Regular,
+    ArrowLeft24Regular,
 } from "@fluentui/react-icons";
 import DownloadPresetPopoverButton from "@/components/DownloadPresetPopoverButton";
 import FileHistoryButton from "@/components/FileHistoryButton";
@@ -32,10 +34,12 @@ export default function SubjectsPage() {
     const [msg, setMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
     const [showCreate, setShowCreate] = useState(false);
     const [newFileName, setNewFileName] = useState("");
+    const [mobileLayer, setMobileLayer] = useState<1 | 2>(1);
 
-    const selectFile = useCallback(async (name: string) => {
+    const selectFile = useCallback(async (name: string, enterMobileEditor = false) => {
         if (!accountId) return;
         setSelectedFile(name);
+        if (enterMobileEditor) setMobileLayer(2);
         setDataLoading(true);
         setMsg(null);
         try {
@@ -60,20 +64,23 @@ export default function SubjectsPage() {
     }, [accountId]);
 
     const loadFiles = useCallback(async () => {
+        if (!accountId) {
+            setLoading(false);
+            return;
+        }
         setLoading(true);
-        if (!accountId) return;
         try {
             const list = await data.list(accountId, "Subjects");
             const arr = Array.isArray(list) ? list : [];
             setFileList(arr);
-            if (arr.length > 0 && !selectedFile) {
+            if (arr.length > 0 && (!selectedFile || !arr.includes(selectedFile))) {
                 selectFile(arr[0]);
             }
         } catch {
             setFileList([]);
         }
         setLoading(false);
-    }, [accountId, selectedFile, selectFile]);
+    }, [accountId, selectFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         loadFiles();
@@ -96,9 +103,9 @@ export default function SubjectsPage() {
                     ? payloadToSave
                     : { Subjects: payloadToSave };
             await data.write(accountId, "Subjects", selectedFile, wrapperPayload);
-            setMsg({ type: "success", text: "科目数据已保存并递增版本号" });
+            setMsg({ type: "success", text: "科目数据已保存" });
         } catch (err: unknown) {
-            setMsg({ type: "error", text: err instanceof Error ? err.message : "保存失败，请检查 JSON 格式" });
+            setMsg({ type: "error", text: err instanceof Error ? err.message : "保存失败，请检查格式" });
         }
         setSaving(false);
     }
@@ -113,19 +120,19 @@ export default function SubjectsPage() {
             setShowCreate(false);
             setNewFileName("");
             await loadFiles();
-            selectFile(name);
+            selectFile(name, true);
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "创建失败" });
         }
     }
 
     async function handleDeleteFile(name: string) {
-        if (!confirm(`确定要删除科目文件 "${name}" 吗？`)) return;
         try {
             await data.deleteData(accountId, "Subjects", name);
             if (selectedFile === name) {
                 setSelectedFile(null);
                 setSubjects({});
+                setMobileLayer(1);
             }
             await loadFiles();
             setMsg({ type: "success", text: "文件已删除" });
@@ -195,7 +202,7 @@ export default function SubjectsPage() {
             )}
 
             <div className="profile-split-layout">
-                <div className="profile-split-sidebar">
+                <div className={`profile-split-sidebar ${mobileLayer !== 1 ? "mobile-layer-hidden" : ""}`}>
                     <div className="card">
                         <div className="card-title">科目文件</div>
                         {loading ? (
@@ -203,30 +210,47 @@ export default function SubjectsPage() {
                         ) : fileList.length === 0 ? (
                             <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>暂无文件</div>
                         ) : (
-                            fileList.map((f) => (
-                                <div
-                                    key={f}
-                                    className={`sidebar-link ${selectedFile === f ? "active" : ""}`}
-                                    onClick={() => selectFile(f)}
-                                >
-                                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{f}</span>
-                                    <Button
-                                        appearance="subtle"
-                                        size="small"
-                                        icon={<Delete24Regular />}
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleDeleteFile(f);
-                                        }}
-                                        style={{ color: "var(--danger-color)", minWidth: 24, padding: 2 }}
-                                    />
-                                </div>
-                            ))
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                {fileList.map((f) => (
+                                    <div
+                                        key={f}
+                                        className={`sidebar-link ${selectedFile === f ? "active" : ""}`}
+                                        onClick={() => selectFile(f, true)}
+                                    >
+                                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{f}</span>
+                                        <ConfirmPopover
+                                            message={`确定要删除科目文件 "${f}" 吗？`}
+                                            onConfirm={() => handleDeleteFile(f)}
+                                            confirmText="删除"
+                                        >
+                                            <Button
+                                                appearance="subtle"
+                                                size="small"
+                                                icon={<Delete24Regular />}
+                                                style={{ color: "var(--danger-color)" }}
+                                            />
+                                        </ConfirmPopover>
+                                    </div>
+                                ))}
+                            </div>
                         )}
                     </div>
                 </div>
 
-                <div style={{ flex: 1 }}>
+                <div className={mobileLayer === 1 ? "mobile-layer-hidden" : ""} style={{ flex: 1, minWidth: 0 }}>
+                    <div className="mobile-only-nav-bar" style={{ marginBottom: 12 }}>
+                        <Button
+                            size="small"
+                            appearance="subtle"
+                            icon={<ArrowLeft24Regular />}
+                            onClick={() => setMobileLayer(1)}
+                        >
+                            返回文件列表
+                        </Button>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{selectedFile || "编辑科目"}</span>
+                        <span />
+                    </div>
+
                     {!selectedFile ? (
                         <div className="card">
                             <div className="empty-state">
@@ -239,9 +263,9 @@ export default function SubjectsPage() {
                         </div>
                     ) : (
                         <div className="card">
-                            <div className="flex items-center justify-between mb-16">
+                            <div className="flex items-center justify-between mb-16" style={{ flexWrap: "wrap", gap: 8 }}>
                                 <div className="card-title" style={{ margin: 0 }}>
-                                    编辑科目文件: {selectedFile} ({Object.keys(subjects).length} 门科目)
+                                    编辑科目文件: {selectedFile} · {Object.keys(subjects).length} 门科目
                                 </div>
                                 <div className="flex gap-8" style={{ flexWrap: "wrap" }}>
                                     <FileHistoryButton
@@ -264,13 +288,13 @@ export default function SubjectsPage() {
                                                 type: "success",
                                                 text: isCurrent
                                                     ? `已加载当前最新版本 v${version}`
-                                                    : `已加载历史版本 v${version} 到编辑器（点击「保存」将创建一个新版本，不会覆盖历史版本）`,
+                                                    : `已加载历史版本 v${version} 到编辑器`,
                                             });
                                         }}
                                         onError={(text) => setMsg({ type: "error", text })}
                                     />
                                     <DownloadPresetPopoverButton
-                                        buttonText="导出 JSON"
+                                        buttonText="导出"
                                         appearance="secondary"
                                         defaultFileName={`Subjects-${selectedFile}.json`}
                                         suggestedNames={[
@@ -341,7 +365,7 @@ export default function SubjectsPage() {
                                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                                                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--accent-color)", fontWeight: 600 }}>
                                                         <DismissCircle24Regular style={{ width: 16, height: 16 }} />
-                                                        特殊“空 / 未设置”占位科目 — 课表与时间表中未分配科目的课程格默认指向此项
+                                                        未分配科目的课程格默认指向此项
                                                     </span>
                                                     <Button
                                                         size="small"
@@ -379,7 +403,7 @@ export default function SubjectsPage() {
                                                     <label className="form-label">科目名称</label>
                                                     <Input
                                                         value={sub.Name || ""}
-                                                        placeholder={isSpecialEmpty ? "（空 / 未设置）" : ""}
+                                                        placeholder={isSpecialEmpty ? "未设置" : "输入科目名称"}
                                                         onChange={(_, d) => updateSubject(id, "Name", d.value)}
                                                         style={{ width: "100%" }}
                                                     />
@@ -398,7 +422,7 @@ export default function SubjectsPage() {
                                                     <Input
                                                         value={sub.TeacherName || ""}
                                                         onChange={(_, d) => updateSubject(id, "TeacherName", d.value)}
-                                                        placeholder="可选"
+                                                        placeholder="选填"
                                                         style={{ width: "100%" }}
                                                     />
                                                 </div>
@@ -457,7 +481,7 @@ export default function SubjectsPage() {
                                     <Input
                                         value={newFileName}
                                         onChange={(_, d) => setNewFileName(d.value)}
-                                        placeholder="如 default 或 senior-1"
+                                        placeholder="输入文件名称"
                                         style={{ width: "100%" }}
                                     />
                                 </div>

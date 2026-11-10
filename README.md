@@ -1,4 +1,4 @@
-# MINI ClassIsland STE (`miniclassisland-ste`)
+# MINI ClassIsland STE (`miniclassisland/ste`)
 
 <p align="center">
   <a href="https://miniclassisland.com" target="_blank" rel="noopener noreferrer">

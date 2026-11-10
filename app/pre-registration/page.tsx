@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { preRegistration, data, accounts } from "@/lib/api";
 import { useAccount } from "@/lib/account-context";
 import type {
@@ -10,15 +10,19 @@ import type {
     ResourceType,
 } from "@/lib/types";
 import { RESOURCE_TYPES, RESOURCE_TYPE_LABELS } from "@/lib/types";
+import { matchAdvancedQuery } from "@/lib/search-engine";
 import {
     Button, Input, Spinner, Switch, Textarea,
-    MessageBar, MessageBarBody,
+    Popover, PopoverTrigger, PopoverSurface,
     Dialog, DialogSurface, DialogBody, DialogTitle, DialogContent, DialogActions,
 } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
 import { Select } from "@/components/CustomSelect";
+import { ConfirmPopover } from "@/components/ConfirmPopover";
 import {
     Add24Regular, Delete24Regular,
     Edit24Regular, Settings24Regular, DocumentAdd24Regular,
+    Search24Regular, Filter16Regular, ChevronLeft16Regular, ChevronRight16Regular,
 } from "@fluentui/react-icons";
 import DownloadPresetPopoverButton from "@/components/DownloadPresetPopoverButton";
 
@@ -26,6 +30,10 @@ export default function PreRegistrationPage() {
     const { accountId, currentAccount } = useAccount();
     const [list, setList] = useState<PreRegOut[]>([]);
     const [loading, setLoading] = useState(true);
+    const [searchQuery, setSearchQuery] = useState("");
+    const [statusFilter, setStatusFilter] = useState<"all" | "bound" | "unbound" | "disabled">("all");
+    const [pageSize, setPageSize] = useState<number>(20);
+    const [currentPage, setCurrentPage] = useState<number>(1);
     const [msg, setMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
     // 新增预注册对话框
@@ -65,7 +73,8 @@ export default function PreRegistrationPage() {
         if (!accountId) return;
         setLoading(true);
         try {
-            setList(await preRegistration.list(accountId));
+            const res = await preRegistration.list(accountId);
+            setList(Array.isArray(res) ? res : []);
         } catch {
             setList([]);
         }
@@ -199,7 +208,6 @@ export default function PreRegistrationPage() {
     }
 
     async function handleDelete(preRegId: string) {
-        if (!confirm("确定要删除此预注册客户端吗？")) return;
         try {
             await preRegistration.delete(accountId, preRegId);
             setMsg({ type: "success", text: "已删除" });
@@ -208,6 +216,39 @@ export default function PreRegistrationPage() {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "删除失败" });
         }
     }
+
+    const filteredList = useMemo(() => {
+        return list.filter((item) => {
+            if (statusFilter === "bound" && !item.bound_client_uid) return false;
+            if (statusFilter === "unbound" && item.bound_client_uid) return false;
+            if (statusFilter === "disabled" && item.is_enabled !== false) return false;
+            return matchAdvancedQuery(item, searchQuery, {
+                fields: {
+                    status: (i) => {
+                        const tags: string[] = [i.bound_client_uid ? "bound" : "unbound"];
+                        if (i.is_enabled === false) tags.push("disabled");
+                        else tags.push("enabled");
+                        return tags;
+                    },
+                    enabled: (i) => i.is_enabled !== false,
+                    label: (i) => i.label,
+                    id: (i) => i.class_identity,
+                    mac: (i) => i.mac_address || "",
+                    uid: (i) => i.bound_client_uid || "",
+                },
+                freeText: (i) => [
+                    i.label,
+                    i.class_identity,
+                    i.mac_address,
+                    i.bound_client_uid,
+                ],
+            });
+        });
+    }, [list, statusFilter, searchQuery]);
+
+    const totalPages = Math.max(1, Math.ceil(filteredList.length / pageSize));
+    const safePage = Math.min(currentPage, totalPages);
+    const pagedList = filteredList.slice((safePage - 1) * pageSize, safePage * pageSize);
 
     const slugName = currentAccount?.slug || "account";
 
@@ -243,112 +284,254 @@ export default function PreRegistrationPage() {
                 </MessageBar>
             )}
 
-            <div className="card">
-                {loading ? (
-                    <div className="empty-state"><Spinner size="medium" /></div>
-                ) : list.length === 0 ? (
-                    <div className="empty-state">
-                        <div className="empty-state-text">暂无预注册客户端</div>
-                        <p style={{ color: "var(--text-secondary)", fontSize: 13, marginTop: 8 }}>
-                            点击「新增预注册」或「批量导入」添加客户端白名单
-                        </p>
+            <div className="clients-main-pane">
+                <div className="card" style={{ padding: "12px 16px", marginBottom: 0 }}>
+                    <div className="flex items-center gap-8" style={{ flexWrap: "wrap" }}>
+                        <Input
+                            placeholder="搜索标签名称、班级标识、物理地址或高级过滤表达式"
+                            value={searchQuery}
+                            onChange={(_, d) => {
+                                setSearchQuery(d.value);
+                                setCurrentPage(1);
+                            }}
+                            contentBefore={<Search24Regular />}
+                            style={{ flex: 1, minWidth: 240, fontFamily: "var(--font-mono)" }}
+                        />
+
+                        <Popover withArrow positioning="below-end">
+                            <PopoverTrigger disableButtonEnhancement>
+                                <Button appearance="outline" icon={<Filter16Regular />}>
+                                    筛选
+                                </Button>
+                            </PopoverTrigger>
+                            <PopoverSurface style={{ padding: 12, width: 280 }}>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                    <div style={{ fontSize: 12, fontWeight: 600 }}>状态快速过滤</div>
+                                    <Select
+                                        size="small"
+                                        value={statusFilter}
+                                        onChange={(_, d) => {
+                                            setStatusFilter(d.value as typeof statusFilter);
+                                            setCurrentPage(1);
+                                        }}
+                                    >
+                                        <option value="all">全部预注册设备</option>
+                                        <option value="bound">已接入终端</option>
+                                        <option value="unbound">待终端接入</option>
+                                        <option value="disabled">已禁用</option>
+                                    </Select>
+
+                                    <div style={{ fontSize: 12, fontWeight: 600, marginTop: 4 }}>快捷表达式</div>
+                                    <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
+                                        {[
+                                            "status:bound",
+                                            "status:unbound",
+                                            "enabled:true",
+                                            "enabled:false",
+                                        ].map((expr) => (
+                                            <Button
+                                                key={expr}
+                                                size="small"
+                                                appearance="secondary"
+                                                onClick={() => {
+                                                    setSearchQuery((prev) => `${prev} ${expr}`.trim());
+                                                    setCurrentPage(1);
+                                                }}
+                                            >
+                                                {expr}
+                                            </Button>
+                                        ))}
+                                        <Button
+                                            size="small"
+                                            appearance="subtle"
+                                            onClick={() => {
+                                                setSearchQuery("");
+                                                setStatusFilter("all");
+                                                setCurrentPage(1);
+                                            }}
+                                        >
+                                            重置
+                                        </Button>
+                                    </div>
+                                </div>
+                            </PopoverSurface>
+                        </Popover>
                     </div>
-                ) : (
-                    <table className="data-table">
-                        <thead>
-                            <tr>
-                                <th>标签名称</th>
-                                <th>班级标识</th>
-                                <th>绑定 MAC 地址</th>
-                                <th>状态 / 已关联终端</th>
-                                <th>预设档案</th>
-                                <th>创建时间</th>
-                                <th>操作</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {list.map((item) => (
-                                <tr key={item.id}>
-                                    <td style={{ fontWeight: 600 }}>{item.label}</td>
-                                    <td>{item.class_identity}</td>
-                                    <td style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                                        {item.mac_address || "不限 MAC"}
-                                    </td>
-                                    <td>
-                                        <div className="flex items-center gap-8">
-                                            <Switch
-                                                checked={item.is_enabled !== false}
-                                                onChange={() => handleToggleEnable(item)}
-                                            />
-                                            {item.bound_client_uid ? (
-                                                <span className="badge badge-success" title={item.bound_client_uid}>
-                                                    已接入
-                                                </span>
-                                            ) : (
-                                                <span className="badge badge-info">待终端接入</span>
-                                            )}
-                                        </div>
-                                    </td>
-                                    <td>
-                                        {item.preset_profile && Object.keys(item.preset_profile).length > 0 ? (
-                                            <span className="badge badge-info">已配置专属档案</span>
-                                        ) : (
-                                            <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>账户默认</span>
-                                        )}
-                                    </td>
-                                    <td style={{ fontSize: 12 }}>
-                                        {new Date(item.created_at).toLocaleString("zh-CN")}
-                                    </td>
-                                    <td>
-                                        <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
-                                            <DownloadPresetPopoverButton
-                                                buttonText="下载引导配置"
-                                                appearance="subtle"
-                                                size="small"
-                                                defaultFileName={`ManagementPreset-${slugName}-${item.class_identity || item.label || item.id.slice(0, 6)}.json`}
-                                                onFetchData={() => preRegistration.downloadPreset(accountId, item.id)}
-                                                onError={(text) => setMsg({ type: "error", text })}
-                                            />
-                                            <Button
-                                                appearance="subtle"
-                                                size="small"
-                                                icon={<Settings24Regular />}
-                                                onClick={() => {
-                                                    setConfigItem(item);
-                                                    setPresetProfile(item.preset_profile || {});
-                                                }}
-                                            >
-                                                预设档案
-                                            </Button>
-                                            <Button
-                                                appearance="subtle"
-                                                size="small"
-                                                icon={<Edit24Regular />}
-                                                onClick={() => {
-                                                    setEditingItem(item);
-                                                    setEditLabel(item.label);
-                                                    setEditIdentity(item.class_identity);
-                                                    setEditMac(item.mac_address || "");
-                                                }}
-                                            >
-                                                编辑
-                                            </Button>
-                                            <Button
-                                                appearance="subtle"
-                                                size="small"
-                                                icon={<Delete24Regular />}
-                                                onClick={() => handleDelete(item.id)}
-                                                style={{ color: "var(--danger-color)" }}
-                                            >
-                                                删除
-                                            </Button>
-                                        </div>
-                                    </td>
+
+                    <div
+                        style={{
+                            marginTop: 8,
+                            fontSize: 12.5,
+                            color: "var(--text-secondary)",
+                            display: "flex",
+                            gap: 14,
+                        }}
+                    >
+                        <span>{list.length}个预注册客户端</span>
+                        <span>{filteredList.length}已筛选</span>
+                    </div>
+                </div>
+
+                <div className="card" style={{ marginBottom: 0, padding: 0, overflow: "hidden" }}>
+                    {loading ? (
+                        <div className="empty-state"><Spinner size="medium" /></div>
+                    ) : list.length === 0 ? (
+                        <div className="empty-state">
+                            <div className="empty-state-text">暂无预注册客户端</div>
+                            <p style={{ color: "var(--text-secondary)", fontSize: 13, marginTop: 8 }}>
+                                点击「新增预注册」或「批量导入」添加客户端白名单
+                            </p>
+                        </div>
+                    ) : pagedList.length === 0 ? (
+                        <div className="empty-state">
+                            <div className="empty-state-text">暂无符合筛选条件的预注册客户端</div>
+                        </div>
+                    ) : (
+                        <table className="data-table">
+                            <thead>
+                                <tr>
+                                    <th>标签名称</th>
+                                    <th>班级标识</th>
+                                    <th>绑定 MAC 地址</th>
+                                    <th>状态 / 已关联终端</th>
+                                    <th>预设档案</th>
+                                    <th>创建时间</th>
+                                    <th>操作</th>
                                 </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                )}
+                            </thead>
+                            <tbody>
+                                {pagedList.map((item) => (
+                                    <tr key={item.id}>
+                                        <td style={{ fontWeight: 600 }}>{item.label}</td>
+                                        <td>{item.class_identity}</td>
+                                        <td style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                                            {item.mac_address || "不限 MAC"}
+                                        </td>
+                                        <td>
+                                            <div className="flex items-center gap-8">
+                                                <Switch
+                                                    checked={item.is_enabled !== false}
+                                                    onChange={() => handleToggleEnable(item)}
+                                                />
+                                                {item.bound_client_uid ? (
+                                                    <span className="badge badge-success" title={item.bound_client_uid}>
+                                                        已接入
+                                                    </span>
+                                                ) : (
+                                                    <span className="badge badge-info">待终端接入</span>
+                                                )}
+                                            </div>
+                                        </td>
+                                        <td>
+                                            {item.preset_profile && Object.keys(item.preset_profile).length > 0 ? (
+                                                <span className="badge badge-info">已配置专属档案</span>
+                                            ) : (
+                                                <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>账户默认</span>
+                                            )}
+                                        </td>
+                                        <td style={{ fontSize: 12 }}>
+                                            {new Date(item.created_at).toLocaleString("zh-CN")}
+                                        </td>
+                                        <td>
+                                            <div className="flex gap-4" style={{ flexWrap: "wrap" }}>
+                                                <DownloadPresetPopoverButton
+                                                    buttonText="下载引导配置"
+                                                    appearance="subtle"
+                                                    size="small"
+                                                    defaultFileName={`ManagementPreset-${slugName}-${item.class_identity || item.label || item.id.slice(0, 6)}.json`}
+                                                    onFetchData={() => preRegistration.downloadPreset(accountId, item.id)}
+                                                    onError={(text) => setMsg({ type: "error", text })}
+                                                />
+                                                <Button
+                                                    appearance="subtle"
+                                                    size="small"
+                                                    icon={<Settings24Regular />}
+                                                    onClick={() => {
+                                                        setConfigItem(item);
+                                                        setPresetProfile(item.preset_profile || {});
+                                                    }}
+                                                >
+                                                    预设档案
+                                                </Button>
+                                                <Button
+                                                    appearance="subtle"
+                                                    size="small"
+                                                    icon={<Edit24Regular />}
+                                                    onClick={() => {
+                                                        setEditingItem(item);
+                                                        setEditLabel(item.label);
+                                                        setEditIdentity(item.class_identity);
+                                                        setEditMac(item.mac_address || "");
+                                                    }}
+                                                >
+                                                    编辑
+                                                </Button>
+                                                <ConfirmPopover
+                                                    message="确定要删除此预注册客户端吗？"
+                                                    onConfirm={() => handleDelete(item.id)}
+                                                    confirmText="删除"
+                                                >
+                                                    <Button
+                                                        appearance="subtle"
+                                                        size="small"
+                                                        icon={<Delete24Regular />}
+                                                        style={{ color: "var(--danger-color)" }}
+                                                    >
+                                                        删除
+                                                    </Button>
+                                                </ConfirmPopover>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    )}
+                </div>
+
+                <div className="clients-pagination-bar">
+                    <div className="flex items-center gap-8">
+                        <Button
+                            size="small"
+                            appearance="subtle"
+                            icon={<ChevronLeft16Regular />}
+                            disabled={safePage <= 1}
+                            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                        />
+                        <span className="mono-code" style={{ fontWeight: 600 }}>
+                            {safePage} / {totalPages}
+                        </span>
+                        <Button
+                            size="small"
+                            appearance="subtle"
+                            icon={<ChevronRight16Regular />}
+                            disabled={safePage >= totalPages}
+                            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                        />
+                        <span style={{ marginLeft: 6 }}>
+                            {loading ? "正在加载" : "加载完毕"}
+                        </span>
+                    </div>
+
+                    <div className="flex items-center gap-6">
+                        <span>每页</span>
+                        <Select
+                            size="small"
+                            value={String(pageSize)}
+                            onChange={(_, d) => {
+                                setPageSize(Number(d.value) || 20);
+                                setCurrentPage(1);
+                            }}
+                            style={{ width: 72 }}
+                        >
+                            <option value="10">10</option>
+                            <option value="20">20</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                        </Select>
+                        <span>条</span>
+                    </div>
+                </div>
             </div>
 
             {/* 新增预注册对话框 */}
@@ -361,7 +544,7 @@ export default function PreRegistrationPage() {
                                 <div>
                                     <label className="form-label">标签名称</label>
                                     <Input
-                                        placeholder="例如：高一(1)班讲台电脑"
+                                        placeholder="输入终端标签名称"
                                         value={form.label}
                                         onChange={(_, d) => setForm((f) => ({ ...f, label: d.value }))}
                                         style={{ width: "100%" }}
@@ -370,7 +553,7 @@ export default function PreRegistrationPage() {
                                 <div>
                                     <label className="form-label">班级标识</label>
                                     <Input
-                                        placeholder="例如：class-101"
+                                        placeholder="输入班级标识"
                                         value={form.class_identity}
                                         onChange={(_, d) => setForm((f) => ({ ...f, class_identity: d.value }))}
                                         style={{ width: "100%" }}
@@ -379,7 +562,7 @@ export default function PreRegistrationPage() {
                                 <div>
                                     <label className="form-label">绑定物理 MAC 地址（可选）</label>
                                     <Input
-                                        placeholder="例如：AA-BB-CC-DD-EE-FF"
+                                        placeholder="输入物理网卡地址"
                                         value={form.mac_address || ""}
                                         onChange={(_, d) => setForm((f) => ({ ...f, mac_address: d.value }))}
                                         style={{ width: "100%" }}
@@ -414,7 +597,7 @@ export default function PreRegistrationPage() {
                                 rows={8}
                                 value={batchText}
                                 onChange={(_, d) => setBatchText(d.value)}
-                                placeholder={"高一1班,class-101,AA-BB-CC-DD-EE-01\n高一2班,class-102,AA-BB-CC-DD-EE-02\n高一3班,class-103"}
+                                placeholder="每行一条记录，按逗号分隔标签名称、班级标识与可选物理地址"
                                 style={{ width: "100%" }}
                             />
                         </DialogContent>

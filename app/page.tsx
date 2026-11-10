@@ -8,9 +8,8 @@ import type { ClientDeviceOut, PairingCodeOut } from "@/lib/types";
 import {
   Button,
   Spinner,
-  MessageBar,
-  MessageBarBody,
 } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
 import {
   ArrowUpload24Regular,
   ArrowSync24Regular,

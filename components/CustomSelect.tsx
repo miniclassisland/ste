@@ -104,8 +104,9 @@ export function Select({
         ? matchedOption.label
         : currentVal || placeholder || options[0]?.label || "";
 
+    const hasExplicitWidth = style?.width !== undefined || style?.minWidth !== undefined;
     const mergedStyle: React.CSSProperties = {
-        minWidth: size === "small" ? 110 : 140,
+        minWidth: hasExplicitWidth ? 0 : size === "small" ? 88 : 112,
         ...style,
     };
 
