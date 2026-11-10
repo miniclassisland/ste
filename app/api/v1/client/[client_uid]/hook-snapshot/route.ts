@@ -11,7 +11,7 @@ export async function POST(
     const { client_uid } = await context.params;
     const xff = request.headers.get("x-forwarded-for");
     const clientIp = xff ? xff.split(",")[0].trim() : "127.0.0.1";
-    const extVer = (request.headers.get("x-extend-management-version") || "2.0.0.3").trim();
+    const extVer = (request.headers.get("x-extend-management-version") || "2.0.0.4").trim();
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
 
     markClientExtendEnabled(client_uid, String(body.pluginVersion || body.version || extVer), {

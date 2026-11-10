@@ -3355,6 +3355,24 @@ pre {
   line-height: 1.5;
 }
 
+.mci-toast-item.is-inline {
+  box-shadow: none;
+  animation: none;
+  background: var(--bg-subtle);
+}
+
+.mci-toast-item.is-inline.site-announcement-banner {
+  border-radius: 0;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-accent-subtle);
+  padding: 6px 24px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
 .mci-toast-item.is-success {
   border-left-color: #107c10;
 }
@@ -3507,8 +3525,8 @@ html[data-theme="dark"] .fui-Button:has(> .fui-Button__icon:only-child:not(.f1ni
   margin-top: 4px;
 }
 
-/* 相邻交互控件在普通流布局中若无父级 flex/grid gap 时提供最小水平间距 */
-*:not(.flex):not([style*="display: flex"]):not([style*="display:flex"]) > .fui-Button + .fui-Button {
+/* 相邻交互控件在普通流布局中若无父级 flex/grid gap 时提供最小水平间距（排除全宽纵向排列按钮） */
+*:not(.flex):not([style*="display: flex"]):not([style*="display:flex"]) > .fui-Button:not([style*="width: 100%"]):not([style*="width:100%"]):not(.w-full) + .fui-Button:not([style*="width: 100%"]):not([style*="width:100%"]):not(.w-full) {
   margin-left: 6px;
 }
 

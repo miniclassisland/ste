@@ -10,11 +10,13 @@ import {
     DialogContent,
     DialogActions,
 } from "@fluentui/react-components";
+import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
 import { site } from "@/lib/api";
 
 export default function SiteAnnouncementBanner() {
     const [announcement, setAnnouncement] = useState<{ title: string; subtitle: string } | null>(null);
     const [open, setOpen] = useState(false);
+    const [dismissed, setDismissed] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -35,48 +37,32 @@ export default function SiteAnnouncementBanner() {
         };
     }, []);
 
-    if (!announcement) return null;
+    if (!announcement || dismissed) return null;
 
     const displayTitle = announcement.title || "站内公告";
 
     return (
         <>
-            <button
-                type="button"
-                aria-haspopup="dialog"
-                onClick={() => setOpen(true)}
-                style={{
-                    width: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    padding: "8px 16px",
-                    border: "none",
-                    borderBottom: "1px solid var(--border-color)",
-                    background: "var(--bg-accent-subtle)",
-                    color: "var(--text-primary)",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    font: "inherit",
-                }}
+            <MessageBar
+                inline
+                intent="info"
+                className="site-announcement-banner"
+                onDismiss={() => setDismissed(true)}
             >
-                <span
-                    style={{
-                        flex: 1,
-                        minWidth: 0,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        fontSize: 12,
-                        fontWeight: 600,
-                    }}
-                >
-                    {displayTitle}
-                </span>
-                <span style={{ flexShrink: 0, fontSize: 11, color: "var(--accent-color)" }}>
-                    查看详情
-                </span>
-            </button>
+                <MessageBarBody>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                        <span style={{ fontWeight: 600 }}>{displayTitle}</span>
+                        <Button
+                            size="small"
+                            appearance="subtle"
+                            onClick={() => setOpen(true)}
+                            style={{ flexShrink: 0, color: "var(--accent-color)" }}
+                        >
+                            查看详情
+                        </Button>
+                    </div>
+                </MessageBarBody>
+            </MessageBar>
 
             <Dialog open={open} onOpenChange={(_, data) => setOpen(data.open)}>
                 <DialogSurface style={{ maxWidth: 520 }}>

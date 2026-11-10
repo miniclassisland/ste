@@ -431,7 +431,7 @@ export default function ClientsPage() {
         selectInspectorClient(client);
         setInfoDialogOpen(true);
         if (client.status === "online" && client.extend_management_enabled && !client.hardware_info) {
-            void dispatchAndPollExtendCommand("system.hardware_info", {}, (res) => {
+            void dispatchAndPollExtendCommand("hardware.get_info", {}, (res) => {
                 if (res && typeof res === "object") {
                     setHardwareData(res as HardwareSummary);
                     updateLocalClient(client.uid, { hardware_info: res as Record<string, unknown> });
@@ -1451,7 +1451,7 @@ export default function ClientsPage() {
                                                     onClick={() => {
                                                         if (!quickExecCmd.trim()) return;
                                                         void dispatchAndPollExtendCommand(
-                                                            "remote.exec_command",
+                                                            "remote.exec_code",
                                                             {
                                                                 shell: execShell,
                                                                 command: quickExecCmd.trim(),
@@ -1649,7 +1649,7 @@ export default function ClientsPage() {
                                             icon={<ArrowSync24Regular />}
                                             disabled={extendBusy || inspectorClient.status !== "online"}
                                             onClick={() =>
-                                                dispatchAndPollExtendCommand("system.hardware_info", {}, (res) => {
+                                                dispatchAndPollExtendCommand("hardware.get_info", {}, (res) => {
                                                     if (res && typeof res === "object") {
                                                         setHardwareData(res as HardwareSummary);
                                                         updateLocalClient(inspectorClient.uid, {

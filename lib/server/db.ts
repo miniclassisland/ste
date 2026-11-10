@@ -119,7 +119,7 @@ export function markClientExtendEnabled(
   const prev = store.extendEnabledClients.get(uid);
   store.extendEnabledClients.set(uid, {
     enabled: true,
-    version: (version || prev?.version || "2.0.0.3").trim(),
+    version: (version || prev?.version || "2.0.0.4").trim(),
     isAppLocked: extra?.isAppLocked !== undefined ? extra.isAppLocked : prev?.isAppLocked,
     pluginSettings: extra?.pluginSettings !== undefined ? extra.pluginSettings : prev?.pluginSettings,
     pluginComponents: extra?.pluginComponents !== undefined ? extra.pluginComponents : prev?.pluginComponents,

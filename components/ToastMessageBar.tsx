@@ -19,6 +19,7 @@ export interface MessageBarProps {
     className?: string;
     autoHideMs?: number;
     onDismiss?: () => void;
+    inline?: boolean;
 }
 
 const TOAST_ROOT_ID = "mci-toast-portal-root";
@@ -49,9 +50,11 @@ function extractNodeSignature(node: React.ReactNode): string {
 export function MessageBar({
     intent = "info",
     children,
+    style,
     className = "",
     autoHideMs,
     onDismiss,
+    inline = false,
 }: MessageBarProps) {
     const id = useId();
     const [mounted, setMounted] = useState(false);
@@ -65,7 +68,7 @@ export function MessageBar({
     }, []);
 
     useEffect(() => {
-        if (!visible) return;
+        if (!visible || inline) return;
         const duration = autoHideMs ?? (intent === "error" || intent === "warning" ? 6500 : 4500);
         if (duration <= 0) return;
         const timer = window.setTimeout(() => {
@@ -73,12 +76,9 @@ export function MessageBar({
             onDismiss?.();
         }, duration);
         return () => window.clearTimeout(timer);
-    }, [visible, signature, intent, autoHideMs, onDismiss]);
+    }, [visible, inline, signature, intent, autoHideMs, onDismiss]);
 
-    if (!mounted || !visible) return null;
-
-    const root = getOrCreateToastRoot();
-    if (!root) return null;
+    if (!visible) return null;
 
     const handleClose = (e: React.MouseEvent) => {
         e.stopPropagation();
@@ -98,6 +98,37 @@ export function MessageBar({
                 return <Info20Regular className="mci-toast-icon is-info" />;
         }
     };
+
+    if (inline) {
+        return (
+            <div
+                key={id}
+                role="status"
+                aria-live="polite"
+                style={style}
+                className={`mci-toast-item is-inline is-${intent} ${className}`.trim()}
+            >
+                <div className="mci-toast-leading">{renderIcon()}</div>
+                <div className="mci-toast-content">{children}</div>
+                {onDismiss && (
+                    <button
+                        type="button"
+                        className="mci-toast-close"
+                        onClick={handleClose}
+                        aria-label="关闭通知"
+                        title="关闭"
+                    >
+                        <Dismiss16Regular />
+                    </button>
+                )}
+            </div>
+        );
+    }
+
+    if (!mounted) return null;
+
+    const root = getOrCreateToastRoot();
+    if (!root) return null;
 
     return createPortal(
         <div
