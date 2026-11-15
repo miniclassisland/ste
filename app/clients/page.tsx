@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { clients, data, audit } from "@/lib/api";
+import { clients, data, audit, editSessions, realtime } from "@/lib/api";
 import { useAccount } from "@/lib/account-context";
 import type {
     NotificationPayload,
@@ -12,6 +12,8 @@ import type {
     ConfigUploadItem,
     CommandExecutionEnvelope,
     AuditLogItem,
+    EditSessionInitialView,
+    EditSessionSummary,
 } from "@/lib/types";
 import {
     RESOURCE_TYPES,
@@ -37,7 +39,7 @@ import {
     Board16Regular, ArrowUp16Regular, QuestionCircle16Regular,
     Image16Regular, ArrowDownload16Regular, ArrowClockwise16Regular,
     Filter16Regular, ChevronLeft16Regular, ChevronRight16Regular,
-    Dismiss16Regular, LockClosed16Regular, LockOpen16Regular,
+    Dismiss16Regular, LockClosed16Regular, LockOpen16Regular, Desktop20Regular,
 } from "@fluentui/react-icons";
 
 interface HardwareSummary {
@@ -257,6 +259,24 @@ export default function ClientsPage() {
         IsSoundEnabled: true,
         IsTopmost: true,
     });
+    const [batchExecShell, setBatchExecShell] = useState<"powershell" | "pwsh" | "cmd" | "bash" | "sh">("powershell");
+    const [batchExecCmd, setBatchExecCmd] = useState("");
+    const [batchExecTimeout, setBatchExecTimeout] = useState(15);
+
+    // 远程编辑与远程协助会话 (RemoteEdit / AssistAnother)
+    const [remoteEditDialogOpen, setRemoteEditDialogOpen] = useState(false);
+    const [remoteEditView, setRemoteEditView] = useState<EditSessionInitialView>("profile");
+    const [remoteEditSubmitting, setRemoteEditSubmitting] = useState(false);
+
+    const [assistDialogOpen, setAssistDialogOpen] = useState(false);
+    const [assistEditorUid, setAssistEditorUid] = useState("");
+    const [assistTargetUid, setAssistTargetUid] = useState("");
+    const [assistView, setAssistView] = useState<EditSessionInitialView>("profile");
+    const [assistSubmitting, setAssistSubmitting] = useState(false);
+
+    const [sessionsDialogOpen, setSessionsDialogOpen] = useState(false);
+    const [activeSessions, setActiveSessions] = useState<EditSessionSummary[]>([]);
+    const [sessionsLoading, setSessionsLoading] = useState(false);
 
     // 优化的设备信息弹窗（查看增强引擎详细设备信息 + 编辑显示名称，不可编辑 ID）
     const [infoDialogOpen, setInfoDialogOpen] = useState(false);
@@ -273,8 +293,15 @@ export default function ClientsPage() {
     const [processList, setProcessList] = useState<ProcessItem[]>([]);
     const [screenshotModalOpen, setScreenshotModalOpen] = useState(false);
     const [screenshotBase64, setScreenshotBase64] = useState("");
+    const [screenshotBlobUrl, setScreenshotBlobUrl] = useState("");
     const [screenshotMime, setScreenshotMime] = useState("image/jpeg");
     const [screenshotTakeoverActive, setScreenshotTakeoverActive] = useState(false);
+    const screenshotBlobUrlRef = useRef("");
+    const pendingCommandsRef = useRef<Map<string, (detail: ConfigUploadItem) => void>>(new Map());
+    const completedEventCacheRef = useRef<Map<string, ConfigUploadItem>>(new Map());
+    const auditDrawerOpenRef = useRef(false);
+    const auditTargetClientRef = useRef<ClientDeviceOut | null>(null);
+    const sessionsDialogOpenRef = useRef(false);
     const [execShell, setExecShell] = useState<"powershell" | "pwsh" | "cmd" | "bash" | "sh">("powershell");
     const [quickExecCmd, setQuickExecCmd] = useState<string>("");
     const [execResultText, setExecResultText] = useState<string>("");
@@ -337,6 +364,19 @@ export default function ClientsPage() {
             setClientList([]);
         }
         setLoading(false);
+    }, [accountId]);
+
+    const refreshClientsSilent = useCallback(async () => {
+        if (!accountId) return;
+        try {
+            const cl = await clients.list(accountId);
+            const list = Array.isArray(cl) ? cl : [];
+            setClientList(list);
+            setInspectorClient((prev) => (prev ? (list.find((c) => c.uid === prev.uid) ?? null) : null));
+            setActiveClient((prev) => (prev ? (list.find((c) => c.uid === prev.uid) ?? null) : null));
+        } catch {
+            // Silent SSE refresh ignores transient failures
+        }
     }, [accountId]);
 
     useEffect(() => {
@@ -440,10 +480,78 @@ export default function ClientsPage() {
         }
     }
 
+    const setScreenshotUrlWithRevoke = useCallback((nextBlobUrl: string) => {
+        const prev = screenshotBlobUrlRef.current;
+        if (prev && prev.startsWith("blob:") && prev !== nextBlobUrl) {
+            URL.revokeObjectURL(prev);
+        }
+        screenshotBlobUrlRef.current = nextBlobUrl;
+        setScreenshotBlobUrl(nextBlobUrl);
+    }, []);
+
+    const closeScreenshotModal = useCallback(() => {
+        setScreenshotModalOpen(false);
+        setScreenshotTakeoverActive(false);
+        setScreenshotBase64("");
+        setScreenshotUrlWithRevoke("");
+    }, [setScreenshotUrlWithRevoke]);
+
+    useEffect(() => {
+        return () => {
+            const cur = screenshotBlobUrlRef.current;
+            if (cur && cur.startsWith("blob:")) {
+                URL.revokeObjectURL(cur);
+            }
+            screenshotBlobUrlRef.current = "";
+        };
+    }, []);
+
+    async function waitCommandCompletion(
+        requestGuid: string,
+        timeoutMs = 15000
+    ): Promise<ConfigUploadItem | null> {
+        const cached = completedEventCacheRef.current.get(requestGuid) || null;
+        if (cached) {
+            completedEventCacheRef.current.delete(requestGuid);
+            return cached;
+        }
+        const maxAttempts = Math.max(1, Math.ceil(timeoutMs / 1000));
+        return await new Promise<ConfigUploadItem | null>((resolve) => {
+            let settled = false;
+            const finish = (detail: ConfigUploadItem | null) => {
+                if (settled) return;
+                settled = true;
+                pendingCommandsRef.current.delete(requestGuid);
+                resolve(detail);
+            };
+
+            pendingCommandsRef.current.set(requestGuid, (detail) => {
+                finish(detail);
+            });
+
+            void (async () => {
+                for (let attempt = 0; attempt < maxAttempts && !settled; attempt++) {
+                    await new Promise((r) => setTimeout(r, 1000));
+                    if (settled) break;
+                    try {
+                        const detail = await clients.getConfigUploadDetail(accountId, requestGuid);
+                        if (detail.status === "completed") {
+                            finish(detail);
+                            return;
+                        }
+                    } catch {
+                        // Continue fallback HTTP polling
+                    }
+                }
+                finish(null);
+            })();
+        });
+    }
+
     async function dispatchAndPollExtendCommand(
         action: string,
         payload: Record<string, unknown> = {},
-        onSuccess?: (data: unknown) => void
+        onSuccess?: (data: unknown) => void | Promise<void>
     ) {
         const target = inspectorClient || activeClient;
         if (!target) return;
@@ -458,19 +566,7 @@ export default function ClientsPage() {
             );
             setMsg({ type: "success", text: "指令已下发，正在等待终端回传" });
 
-            let completedDetail: ConfigUploadItem | null = null;
-            for (let attempt = 0; attempt < 15; attempt++) {
-                await new Promise((r) => setTimeout(r, 1000));
-                try {
-                    const detail = await clients.getConfigUploadDetail(accountId, dispatched.request_guid);
-                    if (detail.status === "completed") {
-                        completedDetail = detail;
-                        break;
-                    }
-                } catch {
-                    // Continue polling
-                }
-            }
+            const completedDetail = await waitCommandCompletion(dispatched.request_guid, 15000);
 
             if (!completedDetail) {
                 setMsg({
@@ -492,13 +588,13 @@ export default function ClientsPage() {
                 } else {
                     setMsg({ type: "success", text: "终端已完成指令" });
                     if (onSuccess) {
-                        onSuccess(rawParsed.data);
+                        await onSuccess(rawParsed.data);
                     }
                 }
             } else {
                 setMsg({ type: "success", text: "终端已回传数据" });
                 if (onSuccess) {
-                    onSuccess(completedDetail.parsed_payload);
+                    await onSuccess(completedDetail.parsed_payload);
                 }
             }
         } catch (err: unknown) {
@@ -527,10 +623,36 @@ export default function ClientsPage() {
         void dispatchAndPollExtendCommand(
             "remote.screenshot",
             { displayIndex: 0, scale: 0.75 },
-            (res) => {
-                if (res && typeof res === "object" && "imageBase64" in res) {
-                    const r = res as { imageBase64?: string; mimeType?: string };
-                    setScreenshotBase64(r.imageBase64 || "");
+            async (res) => {
+                if (!res || typeof res !== "object") return;
+                const r = res as {
+                    screenshotReady?: boolean;
+                    requestGuid?: string;
+                    imageBase64?: string;
+                    mimeType?: string;
+                };
+                if (r.screenshotReady && r.requestGuid) {
+                    try {
+                        const { blobUrl, mimeType } = await clients.getScreenshotBlobUrl(
+                            accountId,
+                            r.requestGuid
+                        );
+                        setScreenshotBase64("");
+                        setScreenshotUrlWithRevoke(blobUrl);
+                        setScreenshotMime(mimeType || r.mimeType || "image/png");
+                        setScreenshotTakeoverActive(false);
+                        setScreenshotModalOpen(true);
+                    } catch (err: unknown) {
+                        setMsg({
+                            type: "error",
+                            text: err instanceof Error ? err.message : "下载截图失败",
+                        });
+                    }
+                    return;
+                }
+                if ("imageBase64" in r && r.imageBase64) {
+                    setScreenshotUrlWithRevoke("");
+                    setScreenshotBase64(r.imageBase64);
                     setScreenshotMime(r.mimeType || "image/jpeg");
                     setScreenshotTakeoverActive(false);
                     setScreenshotModalOpen(true);
@@ -613,11 +735,36 @@ export default function ClientsPage() {
     }
 
     async function handleBatchAction(
-        action: "restart" | "remove" | "lock" | "unlock" | "send_notification"
+        action: "restart" | "remove" | "lock" | "unlock" | "send_notification" | "exec_code"
     ) {
         if (selectedUids.length === 0) return;
         setBatchLoading(true);
         try {
+            if (action === "exec_code") {
+                if (!batchExecCmd.trim()) {
+                    setBatchLoading(false);
+                    return;
+                }
+                const res = await clients.broadcastExtendCommand(
+                    accountId,
+                    "remote.exec_code",
+                    {
+                        shell: batchExecShell,
+                        command: batchExecCmd.trim(),
+                        workingDirectory: "",
+                        timeoutSeconds: Math.max(1, Math.min(300, Number(batchExecTimeout) || 15)),
+                    },
+                    selectedUids,
+                    120
+                );
+                const delivered = res.delivered_count ?? res.sent_count ?? 0;
+                setMsg({
+                    type: "success",
+                    text: `已向 ${delivered}/${res.total_targets} 台已启用增强引擎的客户端下发远程命令`,
+                });
+                setBatchLoading(false);
+                return;
+            }
             await clients.batch(accountId, {
                 client_uids: selectedUids,
                 action,
@@ -654,6 +801,109 @@ export default function ClientsPage() {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "批量操作失败" });
         }
         setBatchLoading(false);
+    }
+
+    function openRemoteEditDialog() {
+        if (!inspectorClient) return;
+        setRemoteEditView("profile");
+        setRemoteEditDialogOpen(true);
+    }
+
+    async function handleStartRemoteEdit() {
+        if (!inspectorClient || remoteEditSubmitting) return;
+        setRemoteEditSubmitting(true);
+        try {
+            const res = await editSessions.create(accountId, {
+                mode: "RemoteEdit",
+                editor_client_uid: inspectorClient.uid,
+                target_client_uid: inspectorClient.uid,
+                initial_view: remoteEditView,
+            });
+            setRemoteEditDialogOpen(false);
+            setMsg({
+                type: "success",
+                text: `已在客户端「${res.session.editor_display_name || inspectorClient.display_name || inspectorClient.uid}」打开远程编辑会话`,
+            });
+        } catch (err: unknown) {
+            setMsg({
+                type: "error",
+                text: err instanceof Error ? err.message : "启动在客户端编辑失败",
+            });
+        } finally {
+            setRemoteEditSubmitting(false);
+        }
+    }
+
+    function openAssistDialog() {
+        if (!inspectorClient) return;
+        const onlineExtend = clientList.filter(
+            (c) => c.status === "online" && !!c.extend_management_enabled && !c.is_disabled
+        );
+        const firstOther = onlineExtend.find((c) => c.uid !== inspectorClient.uid)?.uid || "";
+        setAssistEditorUid(inspectorClient.uid);
+        setAssistTargetUid(firstOther);
+        setAssistView("profile");
+        setAssistDialogOpen(true);
+    }
+
+    async function handleStartAssist() {
+        if (!assistEditorUid || !assistTargetUid || assistEditorUid === assistTargetUid || assistSubmitting) return;
+        setAssistSubmitting(true);
+        try {
+            const res = await editSessions.create(accountId, {
+                mode: "AssistAnother",
+                editor_client_uid: assistEditorUid,
+                target_client_uid: assistTargetUid,
+                initial_view: assistView,
+            });
+            setAssistDialogOpen(false);
+            setMsg({
+                type: "success",
+                text: `已建立端到端协助会话：${res.session.editor_display_name || assistEditorUid} → ${res.session.target_display_name || assistTargetUid}`,
+            });
+        } catch (err: unknown) {
+            setMsg({
+                type: "error",
+                text: err instanceof Error ? err.message : "启动远程协助编辑失败",
+            });
+        } finally {
+            setAssistSubmitting(false);
+        }
+    }
+
+    async function loadActiveEditSessions() {
+        if (!accountId) return;
+        setSessionsLoading(true);
+        try {
+            const res = await editSessions.list(accountId);
+            setActiveSessions(Array.isArray(res?.sessions) ? res.sessions : []);
+        } catch (err: unknown) {
+            setMsg({
+                type: "error",
+                text: err instanceof Error ? err.message : "获取活动编辑会话失败",
+            });
+        } finally {
+            setSessionsLoading(false);
+        }
+    }
+
+    function openSessionsDialog() {
+        setSessionsDialogOpen(true);
+        void loadActiveEditSessions();
+    }
+
+    async function handleCloseEditSession(sessionId: string) {
+        if (!accountId || !sessionId) return;
+        try {
+            await editSessions.close(accountId, sessionId);
+            setActiveSessions((prev) => prev.filter((s) => s.session_id !== sessionId));
+            setMsg({ type: "success", text: "已关闭远程编辑/协助会话" });
+        } catch (err: unknown) {
+            setMsg({
+                type: "error",
+                text: err instanceof Error ? err.message : "关闭会话失败",
+            });
+        }
     }
 
     async function handleQuickProfileSubmit(andSync: boolean) {
@@ -715,11 +965,122 @@ export default function ClientsPage() {
         return "badge-info";
     }
 
+    useEffect(() => {
+        auditDrawerOpenRef.current = auditDrawerOpen;
+        auditTargetClientRef.current = auditTargetClient;
+    }, [auditDrawerOpen, auditTargetClient]);
+
+    useEffect(() => {
+        sessionsDialogOpenRef.current = sessionsDialogOpen;
+    }, [sessionsDialogOpen]);
+
+    useEffect(() => {
+        if (!accountId) return;
+        let statusRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+        const scheduleClientsRefresh = () => {
+            if (statusRefreshTimer) return;
+            statusRefreshTimer = setTimeout(() => {
+                statusRefreshTimer = null;
+                void refreshClientsSilent();
+            }, 200);
+        };
+
+        const unsubscribe = realtime.subscribe(accountId, {
+            onEvent: (evt) => {
+                const d = evt.data || {};
+                if (evt.event === "client.status") {
+                    scheduleClientsRefresh();
+                } else if (evt.event === "command.completed") {
+                    const guid = String(d.request_guid || "").trim();
+                    if (!guid) return;
+                    const rawPayload = typeof d.payload === "string" ? d.payload : "";
+                    const resolver = pendingCommandsRef.current.get(guid);
+                    if (rawPayload) {
+                        let parsedPayload: unknown = undefined;
+                        try {
+                            parsedPayload = JSON.parse(rawPayload);
+                        } catch {
+                            parsedPayload = undefined;
+                        }
+                        const syntheticItem: ConfigUploadItem = {
+                            request_guid: guid,
+                            client_uid: String(d.client_uid || ""),
+                            config_type: Number(d.config_type ?? 100),
+                            config_type_name: "ExtendCommand",
+                            status: "completed",
+                            uploaded_at: String(d.uploaded_at || evt.timestamp || ""),
+                            payload: rawPayload,
+                            parsed_payload: parsedPayload,
+                        };
+                        if (resolver) {
+                            pendingCommandsRef.current.delete(guid);
+                            resolver(syntheticItem);
+                        } else {
+                            if (completedEventCacheRef.current.size >= 50) {
+                                const firstKey = completedEventCacheRef.current.keys().next().value;
+                                if (firstKey) completedEventCacheRef.current.delete(firstKey);
+                            }
+                            completedEventCacheRef.current.set(guid, syntheticItem);
+                        }
+                    } else {
+                        void clients
+                            .getConfigUploadDetail(accountId, guid)
+                            .then((detail) => {
+                                if (detail.status !== "completed") return;
+                                const activeResolver = pendingCommandsRef.current.get(guid);
+                                if (activeResolver) {
+                                    pendingCommandsRef.current.delete(guid);
+                                    activeResolver(detail);
+                                } else {
+                                    if (completedEventCacheRef.current.size >= 50) {
+                                        const firstKey = completedEventCacheRef.current.keys().next().value;
+                                        if (firstKey) completedEventCacheRef.current.delete(firstKey);
+                                    }
+                                    completedEventCacheRef.current.set(guid, detail);
+                                }
+                            })
+                            .catch(() => {
+                                // Fallback HTTP polling will handle it
+                            });
+                    }
+                } else if (evt.event === "edit_session.updated") {
+                    if (sessionsDialogOpenRef.current) {
+                        void editSessions
+                            .list(accountId)
+                            .then((res) => {
+                                setActiveSessions(Array.isArray(res?.sessions) ? res.sessions : []);
+                            })
+                            .catch(() => {});
+                    }
+                } else if (evt.event === "audit.created") {
+                    if (
+                        auditDrawerOpenRef.current &&
+                        auditTargetClientRef.current &&
+                        String(d.client_uid || "") === auditTargetClientRef.current.uid
+                    ) {
+                        void loadBoundClientAudits(auditTargetClientRef.current.uid);
+                    }
+                }
+            },
+        });
+
+        return () => {
+            unsubscribe();
+            if (statusRefreshTimer) {
+                clearTimeout(statusRefreshTimer);
+                statusRefreshTimer = null;
+            }
+        };
+    }, [accountId, refreshClientsSilent, loadBoundClientAudits]);
+
     const onlineCount = clientList.filter((c) => c.status === "online").length;
     const disabledCount = clientList.filter((c) => c.is_disabled).length;
     const totalPages = Math.max(1, Math.ceil(filteredClients.length / pageSize));
     const safePage = Math.min(Math.max(1, currentPage), totalPages);
     const pagedClients = filteredClients.slice((safePage - 1) * pageSize, safePage * pageSize);
+    const resolvedScreenshotSrc =
+        screenshotBlobUrl ||
+        (screenshotBase64 ? `data:${screenshotMime};base64,${screenshotBase64}` : "");
 
     return (
         <div className="fade-in">
@@ -934,6 +1295,67 @@ export default function ClientsPage() {
                                                         onClick={() => handleBatchAction("send_notification")}
                                                     >
                                                         发送
+                                                    </Button>
+                                                </div>
+                                            </PopoverSurface>
+                                        </Popover>
+                                        <Popover withArrow positioning="before">
+                                            <PopoverTrigger disableButtonEnhancement>
+                                                <Button
+                                                    size="small"
+                                                    appearance="secondary"
+                                                    disabled={selectedUids.length === 0 || batchLoading}
+                                                >
+                                                    远程执行命令
+                                                </Button>
+                                            </PopoverTrigger>
+                                            <PopoverSurface style={{ padding: 12, width: 300 }}>
+                                                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                                    <div style={{ fontSize: 12.5, fontWeight: 600 }}>批量远程执行命令</div>
+                                                    <div className="flex items-center gap-6">
+                                                        <Select
+                                                            size="small"
+                                                            value={batchExecShell}
+                                                            onChange={(_, d) =>
+                                                                setBatchExecShell(d.value as typeof batchExecShell)
+                                                            }
+                                                            style={{ flex: 1 }}
+                                                        >
+                                                            <option value="powershell">PowerShell</option>
+                                                            <option value="pwsh">PowerShell Core</option>
+                                                            <option value="cmd">命令提示符</option>
+                                                            <option value="bash">Bash</option>
+                                                            <option value="sh">Shell</option>
+                                                        </Select>
+                                                        <Input
+                                                            size="small"
+                                                            type="number"
+                                                            value={String(batchExecTimeout)}
+                                                            onChange={(_, d) =>
+                                                                setBatchExecTimeout(parseInt(d.value, 10) || 15)
+                                                            }
+                                                            style={{ width: 72 }}
+                                                            title="超时秒数"
+                                                        />
+                                                    </div>
+                                                    <Textarea
+                                                        rows={3}
+                                                        placeholder="输入要在选中增强客户端上执行的命令"
+                                                        value={batchExecCmd}
+                                                        onChange={(_, d) => setBatchExecCmd(d.value)}
+                                                        style={{ fontFamily: "var(--font-mono)" }}
+                                                    />
+                                                    <Button
+                                                        size="small"
+                                                        appearance="primary"
+                                                        disabled={
+                                                            selectedUids.length === 0 ||
+                                                            batchLoading ||
+                                                            !batchExecCmd.trim()
+                                                        }
+                                                        onClick={() => handleBatchAction("exec_code")}
+                                                    >
+                                                        执行
                                                     </Button>
                                                 </div>
                                             </PopoverSurface>
@@ -1385,7 +1807,8 @@ export default function ClientsPage() {
                             </div>
                         </div>
 
-                        {/* 监控：三个按钮移动到标题右侧，只占用一行；发送指令点击后显示气泡 */}
+                        {/* 监控：仅已安装增强引擎的客户端显示 */}
+                        {inspectorClient.extend_management_enabled && (
                         <div className="clients-inspector-section">
                             <div className="clients-inspector-sec-header" style={{ flexWrap: "nowrap", gap: 6 }}>
                                 <span style={{ flexShrink: 0 }}>监控</span>
@@ -1486,6 +1909,7 @@ export default function ClientsPage() {
                                 </div>
                             </div>
                         </div>
+                        )}
 
                         {/* 审查、排障与安全：移除右上角跳转按钮，按钮移到右侧，移除强制更新 */}
                         <div className="clients-inspector-section">
@@ -1499,15 +1923,32 @@ export default function ClientsPage() {
                                         disabled={inspectorClient.status !== "online"}
                                         onClick={async () => {
                                             try {
-                                                await clients.getConfig(
+                                                const res = await clients.getConfig(
                                                     accountId,
                                                     inspectorClient.uid,
                                                     5
                                                 );
                                                 setMsg({
                                                     type: "success",
-                                                    text: "已请求终端上传诊断数据",
+                                                    text: "已请求终端上传诊断数据，正在等待回传...",
                                                 });
+                                                if (res?.request_guid) {
+                                                    const completed = await waitCommandCompletion(
+                                                        res.request_guid,
+                                                        15000
+                                                    );
+                                                    setMsg(
+                                                        completed
+                                                            ? {
+                                                                  type: "success",
+                                                                  text: "终端已回传诊断数据",
+                                                              }
+                                                            : {
+                                                                  type: "error",
+                                                                  text: "终端暂未回传诊断数据",
+                                                              }
+                                                    );
+                                                }
                                             } catch (err: unknown) {
                                                 setMsg({
                                                     type: "error",
@@ -1531,6 +1972,65 @@ export default function ClientsPage() {
                                 </div>
                             </div>
                         </div>
+
+                        {inspectorClient.extend_management_enabled ? (
+                            <div className="clients-inspector-section">
+                                <div className="clients-inspector-sec-header">
+                                    <span>远程编辑与协助</span>
+                                    <Button
+                                        size="small"
+                                        appearance="subtle"
+                                        onClick={openSessionsDialog}
+                                    >
+                                        活动会话
+                                    </Button>
+                                </div>
+                                <div className="flex items-center gap-6" style={{ flexWrap: "wrap" }}>
+                                    <Button
+                                        size="small"
+                                        appearance="outline"
+                                        icon={<Desktop20Regular />}
+                                        disabled={
+                                            inspectorClient.status !== "online" ||
+                                            !!inspectorClient.is_disabled
+                                        }
+                                        onClick={openRemoteEditDialog}
+                                    >
+                                        在客户端编辑档案
+                                    </Button>
+                                    <Button
+                                        size="small"
+                                        appearance="outline"
+                                        icon={<Desktop20Regular />}
+                                        disabled={
+                                            inspectorClient.status !== "online" ||
+                                            !!inspectorClient.is_disabled
+                                        }
+                                        onClick={openAssistDialog}
+                                    >
+                                        远程协助其他设备
+                                    </Button>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="clients-inspector-section">
+                                <div style={{ fontSize: 12.5, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                                    当前设备未安装增强引擎，已隐藏集控增强指令。{" "}
+                                    <a
+                                        href="https://miniclassisland.com/"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        style={{
+                                            color: "var(--brand-color, #0078d4)",
+                                            textDecoration: "underline",
+                                            fontWeight: 500,
+                                        }}
+                                    >
+                                        前往下载增强插件
+                                    </a>
+                                </div>
+                            </div>
+                        )}
                     </aside>
                 )}
             </div>
@@ -1640,29 +2140,29 @@ export default function ClientsPage() {
                                     </div>
                                 </div>
 
-                                <div className="flex items-center justify-between mb-12">
-                                    <span style={{ fontSize: 14, fontWeight: 600 }}>硬件与系统详情</span>
-                                    {inspectorClient.extend_management_enabled && (
-                                        <Button
-                                            size="small"
-                                            appearance="secondary"
-                                            icon={<ArrowSync24Regular />}
-                                            disabled={extendBusy || inspectorClient.status !== "online"}
-                                            onClick={() =>
-                                                dispatchAndPollExtendCommand("hardware.get_info", {}, (res) => {
-                                                    if (res && typeof res === "object") {
-                                                        setHardwareData(res as HardwareSummary);
-                                                        updateLocalClient(inspectorClient.uid, {
-                                                            hardware_info: res as Record<string, unknown>,
-                                                        });
-                                                    }
-                                                })
-                                            }
-                                        >
-                                            刷新硬件信息
-                                        </Button>
-                                    )}
-                                </div>
+                                {inspectorClient.extend_management_enabled && (
+                                    <>
+                                        <div className="flex items-center justify-between mb-12">
+                                            <span style={{ fontSize: 14, fontWeight: 600 }}>硬件与系统详情</span>
+                                            <Button
+                                                size="small"
+                                                appearance="secondary"
+                                                icon={<ArrowSync24Regular />}
+                                                disabled={extendBusy || inspectorClient.status !== "online"}
+                                                onClick={() =>
+                                                    dispatchAndPollExtendCommand("hardware.get_info", {}, (res) => {
+                                                        if (res && typeof res === "object") {
+                                                            setHardwareData(res as HardwareSummary);
+                                                            updateLocalClient(inspectorClient.uid, {
+                                                                hardware_info: res as Record<string, unknown>,
+                                                            });
+                                                        }
+                                                    })
+                                                }
+                                            >
+                                                刷新硬件信息
+                                            </Button>
+                                        </div>
 
                                 {hardwareData ? (
                                     <div className="grid-2">
@@ -1765,6 +2265,8 @@ export default function ClientsPage() {
                                         <div className="empty-state-text">暂无详细硬件数据</div>
                                     </div>
                                 )}
+                                    </>
+                                )}
                             </DialogContent>
                         </DialogBody>
                     </DialogSurface>
@@ -1773,7 +2275,7 @@ export default function ClientsPage() {
 
             {/* 获取到的截图弹窗：标题“获取到的截图”，右侧“接管”、“刷新”与右上角“关闭” */}
             {screenshotModalOpen && (
-                <Dialog open onOpenChange={(_, d) => { if (!d.open) setScreenshotModalOpen(false); }}>
+                <Dialog open onOpenChange={(_, d) => { if (!d.open) closeScreenshotModal(); }}>
                     <DialogSurface style={{ minWidth: 620, maxWidth: "90vw" }}>
                         <DialogBody>
                             <DialogTitle>
@@ -1802,7 +2304,7 @@ export default function ClientsPage() {
                                             size="small"
                                             appearance="subtle"
                                             icon={<Dismiss16Regular />}
-                                            onClick={() => setScreenshotModalOpen(false)}
+                                            onClick={closeScreenshotModal}
                                             title="关闭"
                                         />
                                     </div>
@@ -1814,11 +2316,11 @@ export default function ClientsPage() {
                                         已开启接管，点击下方画面对应位置即可发送一次点击指令
                                     </div>
                                 )}
-                                {screenshotBase64 ? (
+                                {resolvedScreenshotSrc ? (
                                     <div style={{ textAlign: "center", overflow: "auto" }}>
                                         {/* eslint-disable-next-line @next/next/no-img-element */}
                                         <img
-                                            src={`data:${screenshotMime};base64,${screenshotBase64}`}
+                                            src={resolvedScreenshotSrc}
                                             alt="获取到的截图"
                                             onClick={handleScreenshotClick}
                                             style={{
@@ -2021,6 +2523,281 @@ export default function ClientsPage() {
                             </DialogContent>
                             <DialogActions>
                                 <Button appearance="secondary" onClick={() => setSelectedAuditLog(null)}>关闭</Button>
+                            </DialogActions>
+                        </DialogBody>
+                    </DialogSurface>
+                </Dialog>
+            )}
+
+            {/* 在客户端编辑档案 (RemoteEdit) */}
+            {remoteEditDialogOpen && inspectorClient && (
+                <Dialog
+                    open
+                    onOpenChange={(_, d) => {
+                        if (!d.open && !remoteEditSubmitting) setRemoteEditDialogOpen(false);
+                    }}
+                >
+                    <DialogSurface style={{ minWidth: 440, maxWidth: "92vw" }}>
+                        <DialogBody>
+                            <DialogTitle>
+                                在客户端编辑: {inspectorClient.display_name || inspectorClient.client_id || inspectorClient.uid}
+                            </DialogTitle>
+                            <DialogContent>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 4 }}>
+                                    <div className="form-group" style={{ marginBottom: 0 }}>
+                                        <label className="form-label">初始打开视图</label>
+                                        <Select
+                                            value={remoteEditView}
+                                            onChange={(_, d) =>
+                                                setRemoteEditView(d.value as EditSessionInitialView)
+                                            }
+                                            disabled={remoteEditSubmitting}
+                                            style={{ width: "100%" }}
+                                        >
+                                            <option value="profile">档案管理 (全部档案视图)</option>
+                                            <option value="classplan">课表</option>
+                                            <option value="timelayout">时间表</option>
+                                            <option value="subjects">科目</option>
+                                            <option value="settings">应用默认设置</option>
+                                            <option value="components">组件布局</option>
+                                            <option value="policy">集控策略</option>
+                                            <option value="credentials">安全与解锁凭据</option>
+                                        </Select>
+                                    </div>
+                                </div>
+                            </DialogContent>
+                            <DialogActions>
+                                <Button
+                                    appearance="secondary"
+                                    disabled={remoteEditSubmitting}
+                                    onClick={() => setRemoteEditDialogOpen(false)}
+                                >
+                                    取消
+                                </Button>
+                                <Button
+                                    appearance="primary"
+                                    disabled={remoteEditSubmitting}
+                                    onClick={() => void handleStartRemoteEdit()}
+                                >
+                                    {remoteEditSubmitting ? <Spinner size="tiny" /> : "发起远程编辑"}
+                                </Button>
+                            </DialogActions>
+                        </DialogBody>
+                    </DialogSurface>
+                </Dialog>
+            )}
+
+            {/* 远程协助其他设备编辑 (AssistAnother - 纯端到端中继) */}
+            {assistDialogOpen && inspectorClient && (
+                <Dialog
+                    open
+                    onOpenChange={(_, d) => {
+                        if (!d.open && !assistSubmitting) setAssistDialogOpen(false);
+                    }}
+                >
+                    <DialogSurface style={{ minWidth: 480, maxWidth: "92vw" }}>
+                        <DialogBody>
+                            <DialogTitle>远程为另一台设备编辑档案 (AssistAnother)</DialogTitle>
+                            <DialogContent>
+                                {(() => {
+                                    const onlineExtendClients = clientList.filter(
+                                        (c) =>
+                                            c.status === "online" &&
+                                            !!c.extend_management_enabled &&
+                                            !c.is_disabled
+                                    );
+                                    const targetCandidates = onlineExtendClients.filter(
+                                        (c) => c.uid !== assistEditorUid
+                                    );
+                                    return (
+                                        <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 4 }}>
+                                            <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                                                端到端中继模式：仅实时捕获目标设备 (B) 的配置快照并在编辑端 (A) 沙箱界面中修改后防抖回传给目标设备 (B)，<strong>不会修改服务器数据库中的档案与设置表</strong>。
+                                            </p>
+                                            {onlineExtendClients.length < 2 ? (
+                                                <div
+                                                    style={{
+                                                        padding: 12,
+                                                        borderRadius: 6,
+                                                        background: "var(--bg-subtle)",
+                                                        fontSize: 13,
+                                                    }}
+                                                >
+                                                    需要至少两台同时在线且已安装增强引擎 (MEE) 的客户端才能发起互助编辑。
+                                                </div>
+                                            ) : (
+                                                <>
+                                                    <div className="form-group" style={{ marginBottom: 0 }}>
+                                                        <label className="form-label">编辑操作端设备 (A)</label>
+                                                        <Select
+                                                            value={assistEditorUid}
+                                                            onChange={(_, d) => {
+                                                                const nextEditor = d.value;
+                                                                setAssistEditorUid(nextEditor);
+                                                                if (nextEditor === assistTargetUid) {
+                                                                    const fallback =
+                                                                        onlineExtendClients.find(
+                                                                            (c) => c.uid !== nextEditor
+                                                                        )?.uid || "";
+                                                                    setAssistTargetUid(fallback);
+                                                                }
+                                                            }}
+                                                            disabled={assistSubmitting}
+                                                            style={{ width: "100%" }}
+                                                        >
+                                                            {onlineExtendClients.map((c) => (
+                                                                <option key={c.uid} value={c.uid}>
+                                                                    {(c.display_name || c.client_id || c.uid)}
+                                                                    {c.ip ? ` (${c.ip})` : ""}
+                                                                </option>
+                                                            ))}
+                                                        </Select>
+                                                    </div>
+                                                    <div className="form-group" style={{ marginBottom: 0 }}>
+                                                        <label className="form-label">被协助目标设备 (B)</label>
+                                                        <Select
+                                                            value={assistTargetUid}
+                                                            onChange={(_, d) => setAssistTargetUid(d.value)}
+                                                            disabled={assistSubmitting}
+                                                            style={{ width: "100%" }}
+                                                        >
+                                                            {targetCandidates.map((c) => (
+                                                                <option key={c.uid} value={c.uid}>
+                                                                    {(c.display_name || c.client_id || c.uid)}
+                                                                    {c.ip ? ` (${c.ip})` : ""}
+                                                                </option>
+                                                            ))}
+                                                        </Select>
+                                                    </div>
+                                                    <div className="form-group" style={{ marginBottom: 0 }}>
+                                                        <label className="form-label">初始协助视图</label>
+                                                        <Select
+                                                            value={assistView}
+                                                            onChange={(_, d) =>
+                                                                setAssistView(d.value as EditSessionInitialView)
+                                                            }
+                                                            disabled={assistSubmitting}
+                                                            style={{ width: "100%" }}
+                                                        >
+                                                            <option value="profile">档案管理 (全部档案视图)</option>
+                                                            <option value="classplan">课表</option>
+                                                            <option value="timelayout">时间表</option>
+                                                            <option value="subjects">科目</option>
+                                                            <option value="settings">应用设置</option>
+                                                            <option value="components">组件布局</option>
+                                                            <option value="policy">集控策略</option>
+                                                        </Select>
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
+                                    );
+                                })()}
+                            </DialogContent>
+                            <DialogActions>
+                                <Button
+                                    appearance="secondary"
+                                    disabled={assistSubmitting}
+                                    onClick={() => setAssistDialogOpen(false)}
+                                >
+                                    取消
+                                </Button>
+                                <Button
+                                    appearance="primary"
+                                    disabled={
+                                        assistSubmitting ||
+                                        !assistEditorUid ||
+                                        !assistTargetUid ||
+                                        assistEditorUid === assistTargetUid
+                                    }
+                                    onClick={() => void handleStartAssist()}
+                                >
+                                    {assistSubmitting ? <Spinner size="tiny" /> : "发起远程协助"}
+                                </Button>
+                            </DialogActions>
+                        </DialogBody>
+                    </DialogSurface>
+                </Dialog>
+            )}
+
+            {/* 活动远程编辑与协助会话列表 */}
+            {sessionsDialogOpen && (
+                <Dialog open onOpenChange={(_, d) => { if (!d.open) setSessionsDialogOpen(false); }}>
+                    <DialogSurface style={{ minWidth: 560, maxWidth: "92vw" }}>
+                        <DialogBody>
+                            <DialogTitle>活动编辑与协助会话</DialogTitle>
+                            <DialogContent>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                                    <div className="flex items-center justify-between">
+                                        <span style={{ fontSize: 12.5, color: "var(--text-secondary)" }}>
+                                            当前账户正在进行的沙箱会话列表
+                                        </span>
+                                        <Button
+                                            size="small"
+                                            appearance="subtle"
+                                            icon={<ArrowSync24Regular />}
+                                            disabled={sessionsLoading}
+                                            onClick={() => void loadActiveEditSessions()}
+                                        >
+                                            刷新
+                                        </Button>
+                                    </div>
+                                    {sessionsLoading ? (
+                                        <div style={{ padding: 24, display: "flex", justifyContent: "center" }}>
+                                            <Spinner size="small" />
+                                        </div>
+                                    ) : activeSessions.length === 0 ? (
+                                        <div className="empty-state" style={{ padding: 24 }}>
+                                            <div className="empty-state-text">当前没有活动会话</div>
+                                        </div>
+                                    ) : (
+                                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                            {activeSessions.map((s) => (
+                                                <div
+                                                    key={s.session_id}
+                                                    className="card"
+                                                    style={{
+                                                        marginBottom: 0,
+                                                        padding: 10,
+                                                        background: "var(--bg-subtle)",
+                                                        display: "flex",
+                                                        justifyContent: "space-between",
+                                                        alignItems: "center",
+                                                        gap: 10,
+                                                    }}
+                                                >
+                                                    <div style={{ fontSize: 12.5, lineHeight: 1.6 }}>
+                                                        <div>
+                                                            <strong>{s.mode === "RemoteEdit" ? "在客户端编辑" : "端到端协助"}</strong>
+                                                            {" · "}视图: <code>{s.initial_view}</code>
+                                                            {" · "}序号: {s.last_sequence}
+                                                        </div>
+                                                        <div style={{ color: "var(--text-secondary)" }}>
+                                                            编辑端: {s.editor_display_name || s.editor_client_uid}
+                                                            {s.target_client_uid
+                                                                ? ` → 目标端: ${s.target_display_name || s.target_client_uid}`
+                                                                : ""}
+                                                        </div>
+                                                        <div style={{ color: "var(--text-secondary)", fontSize: 11.5 }}>
+                                                            过期时间: {new Date(s.expires_at).toLocaleString("zh-CN")}
+                                                        </div>
+                                                    </div>
+                                                    <Button
+                                                        size="small"
+                                                        appearance="outline"
+                                                        style={{ color: "var(--danger-color)" }}
+                                                        onClick={() => void handleCloseEditSession(s.session_id)}
+                                                    >
+                                                        结束会话
+                                                    </Button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </DialogContent>
+                            <DialogActions>
+                                <Button appearance="secondary" onClick={() => setSessionsDialogOpen(false)}>关闭</Button>
                             </DialogActions>
                         </DialogBody>
                     </DialogSurface>

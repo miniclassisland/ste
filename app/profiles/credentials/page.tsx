@@ -18,6 +18,7 @@ import {
 } from "@fluentui/react-icons";
 import DownloadPresetPopoverButton from "@/components/DownloadPresetPopoverButton";
 import FileHistoryButton from "@/components/FileHistoryButton";
+import RemoteEditLauncherButton from "@/components/RemoteEditLauncherButton";
 
 const AUTH_LEVEL_FIELDS: { key: keyof ManagementCredentialConfig; label: string; hint: string }[] = [
     { key: "EditAuthorizeSettingsAuthorizeLevel", label: "编辑授权设置", hint: "修改认证与授权配置所需的权限等级" },
@@ -66,6 +67,18 @@ export default function CredentialsPage() {
         setDataLoading(false);
     }, [accountId]);
 
+    const reloadCurrentCredentialsSilent = useCallback(async () => {
+        if (!accountId || !selectedFile || saving) return;
+        try {
+            const content = await data.read(accountId, "Credentials", selectedFile);
+            const parsed = (content as ManagementCredentialConfig) || {};
+            setCred(parsed);
+            setJsonText(JSON.stringify(parsed, null, 2));
+        } catch {
+            // Keep existing editor state on transient reload errors
+        }
+    }, [accountId, selectedFile, saving]);
+
     const loadFiles = useCallback(async () => {
         if (!accountId) {
             setLoading(false);
@@ -107,7 +120,7 @@ export default function CredentialsPage() {
         }
     }
 
-    async function handleSave() {
+    async function handleSave(andSync: boolean = false) {
         if (!selectedFile) return;
         setSaving(true);
         setMsg(null);
@@ -128,10 +141,15 @@ export default function CredentialsPage() {
                     setNewAdminPwd("");
                 }
             }
-            await data.write(accountId, "Credentials", selectedFile, payloadToSave);
+            const res = await data.write(accountId, "Credentials", selectedFile, payloadToSave, andSync);
             setCred(payloadToSave);
             setJsonText(JSON.stringify(payloadToSave, null, 2));
-            setMsg({ type: "success", text: "凭据配置已保存并递增版本号" });
+            setMsg({
+                type: "success",
+                text: andSync
+                    ? `凭据配置已保存并递增版本号，已向 ${res.sync?.notified_clients ?? 0}/${res.sync?.matched_clients ?? 0} 台在线客户端请求拉取更新`
+                    : "凭据配置已保存并递增版本号",
+            });
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "保存失败" });
         }
@@ -274,7 +292,19 @@ export default function CredentialsPage() {
                                     >
                                         {jsonMode ? "切换可视化编辑" : "JSON 源码"}
                                     </Button>
-                                    <Button appearance="primary" icon={<Save24Regular />} onClick={handleSave} disabled={saving}>
+                                    <RemoteEditLauncherButton
+                                        accountId={accountId}
+                                        initialView="credentials"
+                                        resourceType="Credentials"
+                                        selectedFile={selectedFile}
+                                        disabled={!selectedFile || saving}
+                                        onMessage={setMsg}
+                                        onRemoteUpdated={() => void reloadCurrentCredentialsSilent()}
+                                    />
+                                    <Button appearance="secondary" icon={<ArrowSync24Regular />} onClick={() => handleSave(true)} disabled={saving}>
+                                        {saving ? <Spinner size="tiny" /> : "保存并更新"}
+                                    </Button>
+                                    <Button appearance="primary" icon={<Save24Regular />} onClick={() => handleSave(false)} disabled={saving}>
                                         {saving ? <Spinner size="tiny" /> : "保存"}
                                     </Button>
                                 </div>

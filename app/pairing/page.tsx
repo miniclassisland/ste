@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { pairing, data, accounts } from "@/lib/api";
+import { pairing, data, accounts, realtime } from "@/lib/api";
 import { useAccount } from "@/lib/account-context";
 import type {
     PairingCodeOut,
@@ -103,10 +103,52 @@ export default function PairingPage() {
         setResourceOptions(nextOpts);
     }, [accountId]);
 
+    const refreshPairingSilent = useCallback(async () => {
+        if (!accountId) return;
+        try {
+            const [codeList, statusRes] = await Promise.all([
+                pairing.listCodes(accountId),
+                pairing.getStatus(accountId),
+            ]);
+            setCodes(Array.isArray(codeList) ? codeList : []);
+            if (statusRes?.registration_mode) {
+                setRegMode(statusRes.registration_mode);
+            }
+        } catch {
+            /* ignore */
+        }
+    }, [accountId]);
+
     useEffect(() => {
         loadData();
         loadResources();
     }, [loadData, loadResources]);
+
+    useEffect(() => {
+        if (!accountId) return;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const scheduleRefresh = () => {
+            if (timer) return;
+            timer = setTimeout(() => {
+                timer = null;
+                void refreshPairingSilent();
+            }, 200);
+        };
+        const unsubscribe = realtime.subscribe(accountId, {
+            onEvent: (evt) => {
+                if (evt.event === "pairing.updated" || evt.event === "client.status") {
+                    scheduleRefresh();
+                }
+            },
+        });
+        return () => {
+            unsubscribe();
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+        };
+    }, [accountId, refreshPairingSilent]);
 
     async function handleModeChange(nextMode: RegistrationMode) {
         setSavingMode(true);

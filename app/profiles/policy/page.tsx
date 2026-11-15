@@ -16,6 +16,7 @@ import {
 } from "@fluentui/react-icons";
 import DownloadPresetPopoverButton from "@/components/DownloadPresetPopoverButton";
 import FileHistoryButton from "@/components/FileHistoryButton";
+import RemoteEditLauncherButton from "@/components/RemoteEditLauncherButton";
 
 const POLICY_FIELDS: { key: keyof ManagementPolicy; label: string; hint: string }[] = [
     { key: "DisableProfileClassPlanEditing", label: "禁止编辑课表", hint: "阻止客户端本地用户修改课表与临时换课" },
@@ -62,6 +63,18 @@ export default function PolicyPage() {
         setDataLoading(false);
     }, [accountId]);
 
+    const reloadCurrentPolicySilent = useCallback(async () => {
+        if (!accountId || !selectedFile || saving) return;
+        try {
+            const content = await data.read(accountId, "Policy", selectedFile);
+            const parsed = (content as ManagementPolicy) || {};
+            setPolicy(parsed);
+            setJsonText(JSON.stringify(parsed, null, 2));
+        } catch {
+            // Keep existing editor state on transient reload errors
+        }
+    }, [accountId, selectedFile, saving]);
+
     const loadFiles = useCallback(async () => {
         if (!accountId) {
             setLoading(false);
@@ -85,7 +98,7 @@ export default function PolicyPage() {
         loadFiles();
     }, [loadFiles]);
 
-    async function handleSave() {
+    async function handleSave(andSync: boolean = false) {
         if (!selectedFile) return;
         setSaving(true);
         setMsg(null);
@@ -97,8 +110,13 @@ export default function PolicyPage() {
             } else {
                 setJsonText(JSON.stringify(policy, null, 2));
             }
-            await data.write(accountId, "Policy", selectedFile, payload);
-            setMsg({ type: "success", text: "策略配置已保存" });
+            const res = await data.write(accountId, "Policy", selectedFile, payload, andSync);
+            setMsg({
+                type: "success",
+                text: andSync
+                    ? `策略配置已保存，已向 ${res.sync?.notified_clients ?? 0}/${res.sync?.matched_clients ?? 0} 台在线客户端请求拉取更新`
+                    : "策略配置已保存",
+            });
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "保存失败" });
         }
@@ -253,7 +271,19 @@ export default function PolicyPage() {
                                     >
                                         {jsonMode ? "切换可视化编辑" : "JSON 源码"}
                                     </Button>
-                                    <Button appearance="primary" icon={<Save24Regular />} onClick={handleSave} disabled={saving}>
+                                    <RemoteEditLauncherButton
+                                        accountId={accountId}
+                                        initialView="policy"
+                                        resourceType="Policy"
+                                        selectedFile={selectedFile}
+                                        disabled={!selectedFile || saving}
+                                        onMessage={setMsg}
+                                        onRemoteUpdated={() => void reloadCurrentPolicySilent()}
+                                    />
+                                    <Button appearance="secondary" icon={<ArrowSync24Regular />} onClick={() => handleSave(true)} disabled={saving}>
+                                        {saving ? <Spinner size="tiny" /> : "保存并更新"}
+                                    </Button>
+                                    <Button appearance="primary" icon={<Save24Regular />} onClick={() => handleSave(false)} disabled={saving}>
                                         {saving ? <Spinner size="tiny" /> : "保存"}
                                     </Button>
                                 </div>

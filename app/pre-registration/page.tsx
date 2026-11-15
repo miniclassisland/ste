@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { preRegistration, data, accounts } from "@/lib/api";
+import { preRegistration, data, accounts, realtime } from "@/lib/api";
 import { useAccount } from "@/lib/account-context";
 import type {
     PreRegOut,
@@ -105,10 +105,46 @@ export default function PreRegistrationPage() {
         setResourceOptions(nextOpts);
     }, [accountId]);
 
+    const refreshDataSilent = useCallback(async () => {
+        if (!accountId) return;
+        try {
+            const res = await preRegistration.list(accountId);
+            setList(Array.isArray(res) ? res : []);
+        } catch {
+            /* ignore */
+        }
+    }, [accountId]);
+
     useEffect(() => {
         loadData();
         loadResources();
     }, [loadData, loadResources]);
+
+    useEffect(() => {
+        if (!accountId) return;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const scheduleRefresh = () => {
+            if (timer) return;
+            timer = setTimeout(() => {
+                timer = null;
+                void refreshDataSilent();
+            }, 200);
+        };
+        const unsubscribe = realtime.subscribe(accountId, {
+            onEvent: (evt) => {
+                if (evt.event === "client.status" || evt.event === "pairing.updated") {
+                    scheduleRefresh();
+                }
+            },
+        });
+        return () => {
+            unsubscribe();
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+        };
+    }, [accountId, refreshDataSilent]);
 
     async function handleCreate() {
         if (!form.label.trim() || (!form.class_identity.trim() && !form.mac_address?.trim())) return;

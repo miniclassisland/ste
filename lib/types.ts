@@ -1406,6 +1406,54 @@ export interface ExtendCommandDispatchResult {
     config_type_name?: string;
 }
 
+export interface ResourceWriteResponse {
+    status: string;
+    version: number;
+    name?: string;
+    message?: string;
+    sync?: {
+        matched_clients: number;
+        notified_clients: number;
+    };
+}
+
+export type EditSessionMode = "RemoteEdit" | "AssistAnother";
+export type EditSessionInitialView =
+    | "profile"
+    | "classplan"
+    | "timelayout"
+    | "subjects"
+    | "settings"
+    | "components"
+    | "policy"
+    | "credentials";
+
+export interface EditSessionCreateRequest {
+    mode: EditSessionMode;
+    editor_client_uid: string;
+    target_client_uid?: string | null;
+    initial_view?: EditSessionInitialView;
+    resource_targets?: Record<string, string> | null;
+}
+
+export interface EditSessionSummary {
+    session_id: string;
+    mode: EditSessionMode;
+    account_id: string;
+    role: string;
+    editor_client_uid: string;
+    editor_display_name: string;
+    target_client_uid?: string | null;
+    target_display_name: string;
+    initial_view: EditSessionInitialView;
+    allowed_scopes: string[];
+    resource_targets: Record<string, string>;
+    base_versions: Record<string, number>;
+    created_at: string;
+    expires_at: string;
+    last_sequence: number;
+}
+
 export interface ExtendCommandBroadcastResult {
     status: string;
     action: string;
@@ -1417,6 +1465,10 @@ export interface ExtendCommandBroadcastResult {
         client_uid: string;
         request_guid: string;
         delivered: boolean;
+    }>;
+    items?: Array<{
+        client_uid: string;
+        request_guid: string;
     }>;
 }
 
@@ -1608,5 +1660,31 @@ export interface QrLoginPollResponse {
     token?: string;
     user_id?: string;
     expires_at?: number;
+}
+
+// ============================================================
+// 实时 SSE 事件流 (Web Realtime Events)
+// ============================================================
+
+export type AccountRealtimeEventType =
+    | "connected"
+    | "client.status"
+    | "command.completed"
+    | "audit.created"
+    | "pairing.updated"
+    | "resource.updated"
+    | "edit_session.updated";
+
+export interface AccountRealtimeEvent<T = Record<string, unknown>> {
+    event: AccountRealtimeEventType | string;
+    account_id: string;
+    timestamp: string;
+    data: T;
+}
+
+export interface RealtimeSubscribeHandlers {
+    onEvent: (evt: AccountRealtimeEvent) => void;
+    onOpen?: () => void;
+    onError?: (err: unknown) => void;
 }
 

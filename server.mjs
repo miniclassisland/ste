@@ -26,8 +26,19 @@ async function main() {
     },
   });
 
+  function ensureForwardedFor(req) {
+    if (!req.headers["x-forwarded-for"]) {
+      const rawIp = req.socket?.remoteAddress || "";
+      const ip = rawIp.startsWith("::ffff:") ? rawIp.slice(7) : rawIp;
+      if (ip) {
+        req.headers["x-forwarded-for"] = ip;
+      }
+    }
+  }
+
   // HTTP/1.1 Server (serves Next.js Web UI, Server Actions, /api/v1/client/.../manifest, /get, and Connect/gRPC-Web)
   const h1Server = http.createServer((req, res) => {
+    ensureForwardedFor(req);
     const urlPath = (req.url || "").split("?", 2)[0];
     if (urlPath.startsWith("/ClassIsland.Shared.Protobuf.Service.")) {
       connectHandler(req, res);
@@ -44,25 +55,62 @@ async function main() {
 
   // HTTP/2 Cleartext (h2c) Server for native ClassIsland gRPC client (Handshake, ClientRegister, ClientCommandDeliver, ConfigUpload, Audit)
   const h2Server = http2.createServer((req, res) => {
+    ensureForwardedFor(req);
     connectHandler(req, res);
   });
 
   // Multiplex HTTP/2 (PRI * HTTP/2.0) and HTTP/1.1 on the same port 21196
   const tcpServer = net.createServer((socket) => {
-    socket.once("readable", () => {
-      const chunk = socket.read(24);
-      if (!chunk) {
-        socket.destroy();
-        return;
-      }
-      const isH2Preface = chunk.toString("ascii", 0, 14) === "PRI * HTTP/2.0";
-      socket.unshift(chunk);
+    const onPreDispatchError = () => {
+      socket.destroy();
+    };
+    socket.on("error", onPreDispatchError);
+
+    const chunks = [];
+    let totalLen = 0;
+
+    const cleanup = () => {
+      socket.removeListener("readable", onReadable);
+      socket.removeListener("end", onEnd);
+      socket.removeListener("error", onPreDispatchError);
+    };
+
+    const dispatch = (buf) => {
+      cleanup();
+      const isH2Preface = buf.length >= 14 && buf.toString("ascii", 0, 14) === "PRI * HTTP/2.0";
+      socket.unshift(buf);
       if (isH2Preface) {
         h2Server.emit("connection", socket);
       } else {
         h1Server.emit("connection", socket);
       }
-    });
+    };
+
+    const onEnd = () => {
+      cleanup();
+      if (totalLen === 0) {
+        socket.destroy();
+        return;
+      }
+      dispatch(Buffer.concat(chunks, totalLen));
+    };
+
+    const onReadable = () => {
+      let chunk;
+      while ((chunk = socket.read()) !== null) {
+        chunks.push(chunk);
+        totalLen += chunk.length;
+        const buf = Buffer.concat(chunks, totalLen);
+        // Either we have enough bytes for the 14-byte HTTP/2 preface, or we see a newline (HTTP/1.x)
+        if (buf.length >= 14 || buf.includes(0x0a)) {
+          dispatch(buf);
+          return;
+        }
+      }
+    };
+
+    socket.on("readable", onReadable);
+    socket.on("end", onEnd);
   });
 
   tcpServer.listen(port, hostname, () => {

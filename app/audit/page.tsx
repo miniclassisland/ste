@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { audit, clients } from "@/lib/api";
+import { audit, clients, realtime } from "@/lib/api";
 import { useAccount } from "@/lib/account-context";
 import type { AuditLogItem, ClientDeviceOut } from "@/lib/types";
 import { AUDIT_EVENT_LABELS } from "@/lib/types";
@@ -52,9 +52,62 @@ export default function AuditPage() {
         setLoading(false);
     }, [accountId, filterClient, filterEvent]);
 
+    const refreshAuditSilent = useCallback(async () => {
+        if (!accountId) return;
+        try {
+            const logRes = await audit.list(accountId, {
+                client_uid: filterClient || undefined,
+                event_type: filterEvent !== "" ? Number(filterEvent) : undefined,
+                limit: 500,
+            });
+            setLogs(Array.isArray(logRes) ? logRes : []);
+        } catch {
+            /* ignore */
+        }
+    }, [accountId, filterClient, filterEvent]);
+
     useEffect(() => {
         loadData();
     }, [loadData]);
+
+    useEffect(() => {
+        if (!accountId) return;
+        const unsubscribe = realtime.subscribe(accountId, {
+            onEvent: (evt) => {
+                if (evt.event !== "audit.created") return;
+                const d = evt.data || {};
+                const rowId = Number(d.id ?? 0);
+                const clientUid = String(d.client_uid || "");
+                const eventType = Number(d.event_type ?? -1);
+                if (filterClient && clientUid !== filterClient) return;
+                if (filterEvent !== "" && eventType !== Number(filterEvent)) return;
+
+                if (Number.isFinite(rowId) && rowId > 0 && eventType >= 0) {
+                    const liveItem: AuditLogItem = {
+                        id: rowId,
+                        client_uid: clientUid,
+                        event_type: eventType,
+                        event_name: String(d.event_name || AUDIT_EVENT_LABELS[eventType] || `Event(${eventType})`),
+                        timestamp_utc: Number(d.timestamp_utc ?? 0),
+                        decoded:
+                            d.decoded && typeof d.decoded === "object"
+                                ? (d.decoded as Record<string, unknown>)
+                                : {},
+                        logged_at: String(d.logged_at || evt.timestamp || new Date().toISOString()),
+                    };
+                    setLogs((prev) => {
+                        if (prev.some((item) => item.id === liveItem.id)) return prev;
+                        return [liveItem, ...prev].slice(0, 500);
+                    });
+                } else {
+                    void refreshAuditSilent();
+                }
+            },
+        });
+        return () => {
+            unsubscribe();
+        };
+    }, [accountId, filterClient, filterEvent, refreshAuditSilent]);
 
     async function handleClear() {
         try {

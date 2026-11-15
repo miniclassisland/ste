@@ -35,6 +35,7 @@ import {
 } from "@fluentui/react-icons";
 import DownloadPresetPopoverButton from "@/components/DownloadPresetPopoverButton";
 import FileHistoryButton from "@/components/FileHistoryButton";
+import RemoteEditLauncherButton from "@/components/RemoteEditLauncherButton";
 
 interface ClassPlanFileWrapper {
     ClassPlans: Record<string, ClassPlan>;
@@ -65,6 +66,32 @@ function formatRuleBadge(rule?: TimeRule): string {
         return `${dayLabel} · ${WEEK_DIV_LABELS[div]}`;
     }
     return `${dayLabel} · ${div}/${divTotal}周`;
+}
+
+function parseClassPlanContent(content: unknown): {
+    plans: Record<string, ClassPlan>;
+    groups: Record<string, ClassPlanGroup>;
+} {
+    let parsedPlans: Record<string, ClassPlan> = {};
+    let parsedGroups: Record<string, ClassPlanGroup> = {
+        [GLOBAL_CLASSPLAN_GROUP_GUID]: { Name: "全局课表群", IsGlobal: true },
+        [DEFAULT_CLASSPLAN_GROUP_GUID]: { Name: "默认课表群", IsGlobal: false },
+    };
+    if (content && typeof content === "object") {
+        const obj = content as Record<string, unknown>;
+        if (obj.ClassPlans && typeof obj.ClassPlans === "object") {
+            parsedPlans = obj.ClassPlans as Record<string, ClassPlan>;
+        } else {
+            parsedPlans = obj as Record<string, ClassPlan>;
+        }
+        if (obj.ClassPlanGroups && typeof obj.ClassPlanGroups === "object") {
+            parsedGroups = {
+                ...parsedGroups,
+                ...(obj.ClassPlanGroups as Record<string, ClassPlanGroup>),
+            };
+        }
+    }
+    return { plans: parsedPlans, groups: parsedGroups };
 }
 
 export default function ClassPlanPage() {
@@ -155,25 +182,7 @@ export default function ClassPlanPage() {
         setDataLoading(true);
         try {
             const content = await data.read(accountId, "ClassPlan", name);
-            let parsedPlans: Record<string, ClassPlan> = {};
-            let parsedGroups: Record<string, ClassPlanGroup> = {
-                [GLOBAL_CLASSPLAN_GROUP_GUID]: { Name: "全局课表群", IsGlobal: true },
-                [DEFAULT_CLASSPLAN_GROUP_GUID]: { Name: "默认课表群", IsGlobal: false },
-            };
-            if (content && typeof content === "object") {
-                const obj = content as Record<string, unknown>;
-                if (obj.ClassPlans && typeof obj.ClassPlans === "object") {
-                    parsedPlans = obj.ClassPlans as Record<string, ClassPlan>;
-                } else {
-                    parsedPlans = obj as Record<string, ClassPlan>;
-                }
-                if (obj.ClassPlanGroups && typeof obj.ClassPlanGroups === "object") {
-                    parsedGroups = {
-                        ...parsedGroups,
-                        ...(obj.ClassPlanGroups as Record<string, ClassPlanGroup>),
-                    };
-                }
-            }
+            const { plans: parsedPlans, groups: parsedGroups } = parseClassPlanContent(content);
             setPlans(parsedPlans);
             setClassPlanGroups(parsedGroups);
             setJsonText(JSON.stringify({ ClassPlans: parsedPlans, ClassPlanGroups: parsedGroups }, null, 2));
@@ -187,6 +196,22 @@ export default function ClassPlanPage() {
         }
         setDataLoading(false);
     }, [accountId]);
+
+    const reloadCurrentClassPlanSilent = useCallback(async () => {
+        if (!accountId || !selectedFile || saving) return;
+        try {
+            const content = await data.read(accountId, "ClassPlan", selectedFile);
+            const { plans: parsedPlans, groups: parsedGroups } = parseClassPlanContent(content);
+            setPlans(parsedPlans);
+            setClassPlanGroups(parsedGroups);
+            setJsonText(JSON.stringify({ ClassPlans: parsedPlans, ClassPlanGroups: parsedGroups }, null, 2));
+            setSelectedPlanKey((prev) =>
+                prev && prev in parsedPlans ? prev : (Object.keys(parsedPlans)[0] ?? null),
+            );
+        } catch {
+            // Keep current editor state on transient reload errors
+        }
+    }, [accountId, selectedFile, saving]);
 
     const loadAll = useCallback(async () => {
         if (!accountId) {
@@ -284,7 +309,7 @@ export default function ClassPlanPage() {
         return !findByGuid(map, id);
     }
 
-    async function handleSave() {
+    async function handleSave(andSync: boolean = false) {
         if (!selectedFile) return;
         setSaving(true);
         setMsg(null);
@@ -308,8 +333,13 @@ export default function ClassPlanPage() {
             } else {
                 setJsonText(JSON.stringify(payloadToSave, null, 2));
             }
-            await data.write(accountId, "ClassPlan", selectedFile, payloadToSave);
-            setMsg({ type: "success", text: "课表配置已保存" });
+            const res = await data.write(accountId, "ClassPlan", selectedFile, payloadToSave, andSync);
+            setMsg({
+                type: "success",
+                text: andSync
+                    ? `课表配置已保存，已向 ${res.sync?.notified_clients ?? 0}/${res.sync?.matched_clients ?? 0} 台在线客户端请求拉取更新`
+                    : "课表配置已保存",
+            });
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "保存失败，请检查格式" });
         }
@@ -802,11 +832,30 @@ export default function ClassPlanPage() {
                         </div>
                     ) : jsonMode ? (
                         <div className="tl-canvas-card" style={{ padding: 16 }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 8, flexWrap: "wrap" }}>
                                 <span style={{ fontWeight: 600 }}>JSON 源码编辑 — {selectedFile}</span>
-                                <Button size="small" appearance="primary" icon={<Save24Regular />} onClick={handleSave} disabled={saving}>
-                                    {saving ? "保存中..." : "保存"}
-                                </Button>
+                                <div className="flex items-center gap-6" style={{ flexWrap: "wrap" }}>
+                                    <RemoteEditLauncherButton
+                                        accountId={accountId}
+                                        initialView="classplan"
+                                        resourceType="ClassPlan"
+                                        selectedFile={selectedFile}
+                                        extraResourceTargets={{
+                                            ...(selectedTimeLayoutFile ? { TimeLayout: selectedTimeLayoutFile } : {}),
+                                            ...(selectedSubjectsFile ? { Subjects: selectedSubjectsFile } : {}),
+                                        }}
+                                        disabled={!selectedFile || saving}
+                                        size="small"
+                                        onMessage={setMsg}
+                                        onRemoteUpdated={() => void reloadCurrentClassPlanSilent()}
+                                    />
+                                    <Button size="small" appearance="secondary" icon={<ArrowSync24Regular />} onClick={() => handleSave(true)} disabled={saving}>
+                                        {saving ? "保存中..." : "保存并更新"}
+                                    </Button>
+                                    <Button size="small" appearance="primary" icon={<Save24Regular />} onClick={() => handleSave(false)} disabled={saving}>
+                                        {saving ? "保存中..." : "保存"}
+                                    </Button>
+                                </div>
                             </div>
                             <div className="json-editor" style={{ flex: 1, display: "flex" }}>
                                 <textarea
@@ -864,7 +913,7 @@ export default function ClassPlanPage() {
                                         </Button>
                                     )}
                                 </div>
-                                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                                         <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>显示课间</span>
                                         <Switch
@@ -872,11 +921,34 @@ export default function ClassPlanPage() {
                                             onChange={(_, d) => setShowBreaksInSchedule(d.checked)}
                                         />
                                     </div>
+                                    <RemoteEditLauncherButton
+                                        accountId={accountId}
+                                        initialView="classplan"
+                                        resourceType="ClassPlan"
+                                        selectedFile={selectedFile}
+                                        extraResourceTargets={{
+                                            ...(selectedTimeLayoutFile ? { TimeLayout: selectedTimeLayoutFile } : {}),
+                                            ...(selectedSubjectsFile ? { Subjects: selectedSubjectsFile } : {}),
+                                        }}
+                                        disabled={!selectedFile || saving}
+                                        size="small"
+                                        onMessage={setMsg}
+                                        onRemoteUpdated={() => void reloadCurrentClassPlanSilent()}
+                                    />
+                                    <Button
+                                        size="small"
+                                        appearance="secondary"
+                                        icon={<ArrowSync24Regular />}
+                                        onClick={() => handleSave(true)}
+                                        disabled={saving}
+                                    >
+                                        {saving ? "保存中..." : "保存并更新"}
+                                    </Button>
                                     <Button
                                         size="small"
                                         appearance="primary"
                                         icon={<Save24Regular />}
-                                        onClick={handleSave}
+                                        onClick={() => handleSave(false)}
                                         disabled={saving}
                                     >
                                         {saving ? "保存中..." : "保存"}

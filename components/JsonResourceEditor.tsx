@@ -3,14 +3,36 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { data } from "@/lib/api";
 import { useAccount } from "@/lib/account-context";
-import type { ResourceType } from "@/lib/types";
+import type { ResourceType, EditSessionInitialView } from "@/lib/types";
 import {
     Button, Input, Spinner, Textarea,
     Dialog, DialogSurface, DialogBody, DialogTitle, DialogContent, DialogActions,
 } from "@fluentui/react-components";
 import { MessageBar, MessageBarBody } from "@/components/ToastMessageBar";
 import { ConfirmPopover } from "@/components/ConfirmPopover";
+import RemoteEditLauncherButton from "@/components/RemoteEditLauncherButton";
 import { Add24Regular, Delete24Regular, Save24Regular, ArrowSync24Regular } from "@fluentui/react-icons";
+
+function resolveInitialView(resourceType: ResourceType): EditSessionInitialView {
+    switch (resourceType) {
+        case "ClassPlan":
+            return "classplan";
+        case "TimeLayout":
+            return "timelayout";
+        case "Subjects":
+            return "subjects";
+        case "Policy":
+            return "policy";
+        case "Credentials":
+            return "credentials";
+        case "Components":
+            return "components";
+        case "DefaultSettings":
+            return "settings";
+        default:
+            return "profile";
+    }
+}
 
 /**
  * 通用 JSON 资源编辑器
@@ -59,6 +81,17 @@ export default function JsonResourceEditor({
         setDataLoading(false);
     }
 
+    async function reloadCurrentFileSilent() {
+        if (!accountId || !selectedFile || saving) return;
+        try {
+            const content = await data.read(accountId, resourceType, selectedFile);
+            setJsonContent(JSON.stringify(content, null, 2));
+            setParseError(null);
+        } catch {
+            // Keep existing editor content on transient reload errors
+        }
+    }
+
     function handleJsonChange(value: string) {
         setJsonContent(value);
         try {
@@ -69,14 +102,19 @@ export default function JsonResourceEditor({
         }
     }
 
-    async function handleSave() {
+    async function handleSave(andSync: boolean = false) {
         if (!selectedFile || parseError) return;
         setSaving(true);
         setMsg(null);
         try {
             const parsed = JSON.parse(jsonContent);
-            await data.write(accountId, resourceType, selectedFile, parsed);
-            setMsg({ type: "success", text: "数据已保存" });
+            const res = await data.write(accountId, resourceType, selectedFile, parsed, andSync);
+            setMsg({
+                type: "success",
+                text: andSync
+                    ? `数据已保存并向 ${res.sync?.notified_clients ?? 0}/${res.sync?.matched_clients ?? 0} 台在线客户端请求拉取更新`
+                    : "数据已保存",
+            });
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "保存失败" });
         }
@@ -162,9 +200,21 @@ export default function JsonResourceEditor({
                         <div className="card">
                             <div className="flex items-center justify-between mb-16">
                                 <div className="card-title">编辑: {selectedFile}</div>
-                                <div className="flex gap-8">
+                                <div className="flex gap-8" style={{ flexWrap: "wrap" }}>
                                     <Button appearance="subtle" size="small" onClick={formatJson}>格式化</Button>
-                                    <Button appearance="primary" icon={<Save24Regular />} onClick={handleSave} disabled={saving || !!parseError}>
+                                    <RemoteEditLauncherButton
+                                        accountId={accountId}
+                                        initialView={resolveInitialView(resourceType)}
+                                        resourceType={resourceType}
+                                        selectedFile={selectedFile}
+                                        disabled={!selectedFile || saving}
+                                        onMessage={setMsg}
+                                        onRemoteUpdated={() => void reloadCurrentFileSilent()}
+                                    />
+                                    <Button appearance="secondary" icon={<ArrowSync24Regular />} onClick={() => handleSave(true)} disabled={saving || !!parseError}>
+                                        {saving ? <Spinner size="tiny" /> : "保存并更新"}
+                                    </Button>
+                                    <Button appearance="primary" icon={<Save24Regular />} onClick={() => handleSave(false)} disabled={saving || !!parseError}>
                                         {saving ? <Spinner size="tiny" /> : "保存"}
                                     </Button>
                                 </div>

@@ -58,9 +58,11 @@ import {
     WeatherPartlyCloudyDay16Regular,
     ChevronUp16Regular,
     ChevronDown16Regular,
+    ArrowSync20Regular,
 } from "@fluentui/react-icons";
 import DownloadPresetPopoverButton from "@/components/DownloadPresetPopoverButton";
 import FileHistoryButton from "@/components/FileHistoryButton";
+import RemoteEditLauncherButton from "@/components/RemoteEditLauncherButton";
 
 type TimeLayoutsData = Record<string, TimeLayout>;
 type SubjectsData = Record<string, Subject>;
@@ -281,6 +283,19 @@ function TimeInputGroup({
     );
 }
 
+function parseTimeLayoutContent(content: unknown): TimeLayoutsData {
+    let parsed: TimeLayoutsData = {};
+    if (content && typeof content === "object") {
+        const obj = content as Record<string, unknown>;
+        if (obj.TimeLayouts && typeof obj.TimeLayouts === "object") {
+            parsed = obj.TimeLayouts as TimeLayoutsData;
+        } else {
+            parsed = obj as TimeLayoutsData;
+        }
+    }
+    return normalizeTimeLayoutsForSave(parsed);
+}
+
 export default function TimeLayoutPage() {
     const { accountId } = useAccount();
     const [fileList, setFileList] = useState<string[]>([]);
@@ -333,16 +348,7 @@ export default function TimeLayoutPage() {
             setDataLoading(true);
             try {
                 const content = await data.read(accountId, "TimeLayout", name);
-                let parsed: TimeLayoutsData = {};
-                if (content && typeof content === "object") {
-                    const obj = content as Record<string, unknown>;
-                    if (obj.TimeLayouts && typeof obj.TimeLayouts === "object") {
-                        parsed = obj.TimeLayouts as TimeLayoutsData;
-                    } else {
-                        parsed = obj as TimeLayoutsData;
-                    }
-                }
-                const normalized = normalizeTimeLayoutsForSave(parsed);
+                const normalized = parseTimeLayoutContent(content);
                 setLayouts(normalized);
                 setJsonText(JSON.stringify(normalized, null, 2));
                 const firstId = Object.keys(normalized)[0] || null;
@@ -356,6 +362,21 @@ export default function TimeLayoutPage() {
         },
         [accountId]
     );
+
+    const reloadCurrentTimeLayoutSilent = useCallback(async () => {
+        if (!accountId || !selectedFile || saving) return;
+        try {
+            const content = await data.read(accountId, "TimeLayout", selectedFile);
+            const normalized = parseTimeLayoutContent(content);
+            setLayouts(normalized);
+            setJsonText(JSON.stringify(normalized, null, 2));
+            setSelectedLayoutId((prev) =>
+                prev && prev in normalized ? prev : (Object.keys(normalized)[0] ?? null),
+            );
+        } catch {
+            // Keep existing editor state on transient reload errors
+        }
+    }, [accountId, selectedFile, saving]);
 
     const loadSubjectFile = useCallback(
         async (subFile: string) => {
@@ -409,7 +430,7 @@ export default function TimeLayoutPage() {
         loadFiles();
     }, [loadFiles]);
 
-    async function handleSave() {
+    async function handleSave(andSync: boolean = false) {
         if (!selectedFile) return;
         setSaving(true);
         setMsg(null);
@@ -428,8 +449,13 @@ export default function TimeLayoutPage() {
                 payloadToSave && typeof payloadToSave === "object" && "TimeLayouts" in payloadToSave
                     ? payloadToSave
                     : { TimeLayouts: payloadToSave };
-            await data.write(accountId, "TimeLayout", selectedFile, wrapperPayload);
-            setMsg({ type: "success", text: "时间表已保存" });
+            const res = await data.write(accountId, "TimeLayout", selectedFile, wrapperPayload, andSync);
+            setMsg({
+                type: "success",
+                text: andSync
+                    ? `时间表已保存，已向 ${res.sync?.notified_clients ?? 0}/${res.sync?.matched_clients ?? 0} 台在线客户端请求拉取更新`
+                    : "时间表已保存",
+            });
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "保存失败，请检查数据格式" });
         }
@@ -1038,12 +1064,32 @@ export default function TimeLayoutPage() {
                             </Button>
                         </div>
 
-                        <div className="flex items-center gap-6">
+                        <div className="flex items-center gap-6" style={{ flexWrap: "wrap" }}>
+                            <RemoteEditLauncherButton
+                                accountId={accountId}
+                                initialView="timelayout"
+                                resourceType="TimeLayout"
+                                selectedFile={selectedFile}
+                                extraResourceTargets={selectedSubjectFile ? { Subjects: selectedSubjectFile } : undefined}
+                                disabled={!selectedFile || saving}
+                                size="small"
+                                onMessage={setMsg}
+                                onRemoteUpdated={() => void reloadCurrentTimeLayoutSilent()}
+                            />
+                            <Button
+                                size="small"
+                                appearance="secondary"
+                                icon={<ArrowSync20Regular />}
+                                onClick={() => handleSave(true)}
+                                disabled={saving || !selectedFile}
+                            >
+                                {saving ? <Spinner size="extra-tiny" /> : "保存并更新"}
+                            </Button>
                             <Button
                                 size="small"
                                 appearance="primary"
                                 icon={<Save20Regular />}
-                                onClick={handleSave}
+                                onClick={() => handleSave(false)}
                                 disabled={saving || !selectedFile}
                             >
                                 {saving ? <Spinner size="extra-tiny" /> : "保存"}

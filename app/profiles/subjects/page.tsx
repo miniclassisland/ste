@@ -18,8 +18,20 @@ import {
 } from "@fluentui/react-icons";
 import DownloadPresetPopoverButton from "@/components/DownloadPresetPopoverButton";
 import FileHistoryButton from "@/components/FileHistoryButton";
+import RemoteEditLauncherButton from "@/components/RemoteEditLauncherButton";
 
 type SubjectsData = Record<string, Subject>;
+
+function parseSubjectsContent(content: unknown): SubjectsData {
+    if (content && typeof content === "object") {
+        const obj = content as Record<string, unknown>;
+        if (obj.Subjects && typeof obj.Subjects === "object") {
+            return obj.Subjects as SubjectsData;
+        }
+        return obj as SubjectsData;
+    }
+    return {};
+}
 
 export default function SubjectsPage() {
     const { accountId } = useAccount();
@@ -44,15 +56,7 @@ export default function SubjectsPage() {
         setMsg(null);
         try {
             const content = await data.read(accountId, "Subjects", name);
-            let parsed: SubjectsData = {};
-            if (content && typeof content === "object") {
-                const obj = content as Record<string, unknown>;
-                if (obj.Subjects && typeof obj.Subjects === "object") {
-                    parsed = obj.Subjects as SubjectsData;
-                } else {
-                    parsed = obj as SubjectsData;
-                }
-            }
+            const parsed = parseSubjectsContent(content);
             setSubjects(parsed);
             setJsonText(JSON.stringify(parsed, null, 2));
         } catch (err: unknown) {
@@ -62,6 +66,18 @@ export default function SubjectsPage() {
         }
         setDataLoading(false);
     }, [accountId]);
+
+    const reloadCurrentSubjectsSilent = useCallback(async () => {
+        if (!accountId || !selectedFile || saving) return;
+        try {
+            const content = await data.read(accountId, "Subjects", selectedFile);
+            const parsed = parseSubjectsContent(content);
+            setSubjects(parsed);
+            setJsonText(JSON.stringify(parsed, null, 2));
+        } catch {
+            // Keep existing editor state on transient reload errors
+        }
+    }, [accountId, selectedFile, saving]);
 
     const loadFiles = useCallback(async () => {
         if (!accountId) {
@@ -86,7 +102,7 @@ export default function SubjectsPage() {
         loadFiles();
     }, [loadFiles]);
 
-    async function handleSave() {
+    async function handleSave(andSync: boolean = false) {
         if (!selectedFile) return;
         setSaving(true);
         setMsg(null);
@@ -102,8 +118,13 @@ export default function SubjectsPage() {
                 payloadToSave && typeof payloadToSave === "object" && "Subjects" in payloadToSave
                     ? payloadToSave
                     : { Subjects: payloadToSave };
-            await data.write(accountId, "Subjects", selectedFile, wrapperPayload);
-            setMsg({ type: "success", text: "科目数据已保存" });
+            const res = await data.write(accountId, "Subjects", selectedFile, wrapperPayload, andSync);
+            setMsg({
+                type: "success",
+                text: andSync
+                    ? `科目数据已保存，已向 ${res.sync?.notified_clients ?? 0}/${res.sync?.matched_clients ?? 0} 台在线客户端请求拉取更新`
+                    : "科目数据已保存",
+            });
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "保存失败，请检查格式" });
         }
@@ -328,7 +349,19 @@ export default function SubjectsPage() {
                                             添加科目
                                         </Button>
                                     )}
-                                    <Button appearance="primary" icon={<Save24Regular />} onClick={handleSave} disabled={saving}>
+                                    <RemoteEditLauncherButton
+                                        accountId={accountId}
+                                        initialView="subjects"
+                                        resourceType="Subjects"
+                                        selectedFile={selectedFile}
+                                        disabled={!selectedFile || saving}
+                                        onMessage={setMsg}
+                                        onRemoteUpdated={() => void reloadCurrentSubjectsSilent()}
+                                    />
+                                    <Button appearance="secondary" icon={<ArrowSync24Regular />} onClick={() => handleSave(true)} disabled={saving}>
+                                        {saving ? <Spinner size="tiny" /> : "保存并更新"}
+                                    </Button>
+                                    <Button appearance="primary" icon={<Save24Regular />} onClick={() => handleSave(false)} disabled={saving}>
                                         {saving ? <Spinner size="tiny" /> : "保存"}
                                     </Button>
                                 </div>

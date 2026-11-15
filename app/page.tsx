@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useAccount } from "@/lib/account-context";
 import { useHydrationData } from "@/components/Providers";
-import { clients, pairing, accounts } from "@/lib/api";
+import { clients, pairing, accounts, realtime } from "@/lib/api";
 import type { ClientDeviceOut, PairingCodeOut } from "@/lib/types";
 import {
   Button,
@@ -47,9 +47,54 @@ export default function HomePage() {
     setLoading(false);
   }, [accountId]);
 
+  const refreshDataSilent = useCallback(async () => {
+    if (!accountId) return;
+    try {
+      const [cl, pc] = await Promise.all([
+        clients.list(accountId).catch(() => [] as ClientDeviceOut[]),
+        pairing.listCodes(accountId).catch(() => [] as PairingCodeOut[]),
+      ]);
+      setClientList(Array.isArray(cl) ? cl : []);
+      setPairingList(Array.isArray(pc) ? pc : []);
+    } catch {
+      /* ignore */
+    }
+  }, [accountId]);
+
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    if (!accountId) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRefresh = () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void refreshDataSilent();
+      }, 300);
+    };
+    const unsubscribe = realtime.subscribe(accountId, {
+      onEvent: (evt) => {
+        if (
+          evt.event === "client.status" ||
+          evt.event === "pairing.updated" ||
+          evt.event === "audit.created" ||
+          evt.event === "resource.updated"
+        ) {
+          scheduleRefresh();
+        }
+      },
+    });
+    return () => {
+      unsubscribe();
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+  }, [accountId, refreshDataSilent]);
 
   const onlineCount = clientList.filter((c) => c.status === "online").length;
   const pendingPairing = pairingList.filter(

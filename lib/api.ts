@@ -24,6 +24,11 @@ import type {
   UserOut,
   PluginComponentItem,
   ClientBatchRequest,
+  ResourceWriteResponse,
+  EditSessionCreateRequest,
+  EditSessionSummary,
+  AccountRealtimeEvent,
+  RealtimeSubscribeHandlers,
 } from "./types";
 
 const TOKEN_KEY = "miniclassisland_auth_token";
@@ -247,11 +252,18 @@ export const data = {
       name,
     }),
 
-  write: (_accountId: string, resourceType: string, name: string, body: unknown) =>
-    callAction<{ status: string; version: number }>("data.write", {
+  write: (
+    _accountId: string,
+    resourceType: string,
+    name: string,
+    body: unknown,
+    sync: boolean = false
+  ) =>
+    callAction<ResourceWriteResponse>("data.write", {
       resource_type: resourceType,
       name,
       body,
+      sync,
     }),
 
   delete: (_accountId: string, resourceType: string, name: string) =>
@@ -461,6 +473,174 @@ export const clients = {
   getConfigUploadDetail: (_accountId: string, requestGuid: string) =>
     callAction<ConfigUploadItem>("clients.getConfigUploadDetail", {
       request_guid: requestGuid,
+    }),
+
+  getScreenshotBlobUrl: async (
+    _accountId: string,
+    requestGuid: string
+  ): Promise<{ blobUrl: string; mimeType: string }> => {
+    const token = getToken();
+    const res = await fetch(`/api/screenshot/${encodeURIComponent(requestGuid)}`, {
+      method: "GET",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: "same-origin",
+    });
+    if (!res.ok) {
+      throw new Error((await res.text().catch(() => "")) || `获取截图失败 (${res.status})`);
+    }
+    const blob = await res.blob();
+    return {
+      blobUrl: URL.createObjectURL(blob),
+      mimeType: blob.type || res.headers.get("content-type") || "image/png",
+    };
+  },
+};
+
+const SSE_BACKOFF_MS = [1000, 2000, 5000, 10000];
+
+export const realtime = {
+  subscribe: (accountId: string, handlers: RealtimeSubscribeHandlers): () => void => {
+    if (typeof window === "undefined" || !accountId) {
+      return () => {};
+    }
+    let stopped = false;
+    let controller: AbortController | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+
+    const scheduleReconnect = () => {
+      if (stopped) return;
+      const delay = SSE_BACKOFF_MS[Math.min(attempt, SSE_BACKOFF_MS.length - 1)];
+      attempt += 1;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        void connect();
+      }, delay);
+    };
+
+    const dispatchRawBlock = (rawBlock: string) => {
+      const lines = rawBlock.split("\n");
+      let eventName = "";
+      const dataLines: string[] = [];
+      for (const line of lines) {
+        if (!line || line.startsWith(":")) continue;
+        const colonIdx = line.indexOf(":");
+        const field = colonIdx >= 0 ? line.slice(0, colonIdx).trim() : line.trim();
+        let value = colonIdx >= 0 ? line.slice(colonIdx + 1) : "";
+        if (value.startsWith(" ")) value = value.slice(1);
+        if (field === "event") {
+          eventName = value.trim();
+        } else if (field === "data") {
+          dataLines.push(value);
+        }
+      }
+      if (dataLines.length === 0) return;
+      const rawData = dataLines.join("\n");
+      try {
+        const parsed = JSON.parse(rawData) as Partial<AccountRealtimeEvent>;
+        const normalized: AccountRealtimeEvent = {
+          event: parsed.event || eventName || "message",
+          account_id: parsed.account_id || accountId,
+          timestamp: parsed.timestamp || new Date().toISOString(),
+          data:
+            parsed.data && typeof parsed.data === "object"
+              ? (parsed.data as Record<string, unknown>)
+              : {},
+        };
+        handlers.onEvent(normalized);
+      } catch {
+        // Ignore malformed SSE JSON payload
+      }
+    };
+
+    const connect = async () => {
+      if (stopped) return;
+      const token = getToken();
+      if (!token) return;
+      controller = new AbortController();
+      try {
+        const res = await fetch("/api/events", {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "text/event-stream",
+          },
+          credentials: "same-origin",
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (res.status === 401 || res.status === 403) {
+          handlers.onError?.(new Error("实时事件流鉴权失败"));
+          return;
+        }
+        if (!res.ok || !res.body) {
+          throw new Error(`SSE HTTP ${res.status}`);
+        }
+        attempt = 0;
+        handlers.onOpen?.();
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (!stopped) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true })
+            .replace(/\r\n/g, "\n")
+            .replace(/\r/g, "\n");
+          let boundary = buffer.indexOf("\n\n");
+          while (boundary !== -1) {
+            const block = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            if (block.trim()) {
+              dispatchRawBlock(block);
+            }
+            boundary = buffer.indexOf("\n\n");
+          }
+        }
+        if (!stopped) {
+          scheduleReconnect();
+        }
+      } catch (err) {
+        if (stopped) return;
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        handlers.onError?.(err);
+        scheduleReconnect();
+      }
+    };
+
+    void connect();
+
+    return () => {
+      stopped = true;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (controller) {
+        controller.abort();
+        controller = null;
+      }
+    };
+  },
+};
+
+/* ===== 远程编辑与协助会话 ===== */
+
+export const editSessions = {
+  create: (_accountId: string, body: EditSessionCreateRequest) =>
+    callAction<{
+      status: string;
+      command_request_guid: string;
+      session: EditSessionSummary;
+    }>("editSession.create", { body }),
+
+  list: (_accountId: string) =>
+    callAction<{ sessions: EditSessionSummary[] }>("editSession.list"),
+
+  close: (_accountId: string, sessionId: string) =>
+    callAction<{ status: string; session_id: string }>("editSession.close", {
+      session_id: sessionId,
     }),
 };
 

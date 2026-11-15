@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
-import { data, clients } from "@/lib/api";
+import { data, clients, realtime } from "@/lib/api";
 import { useAccount } from "@/lib/account-context";
 import type {
     ComponentProfile,
@@ -32,6 +32,7 @@ import {
 } from "@fluentui/react-icons";
 import DownloadPresetPopoverButton from "@/components/DownloadPresetPopoverButton";
 import FileHistoryButton from "@/components/FileHistoryButton";
+import RemoteEditLauncherButton from "@/components/RemoteEditLauncherButton";
 
 type BottomTabKey = "library" | "settings" | "advanced" | "line";
 
@@ -211,6 +212,22 @@ export default function ComponentsPage() {
         setDataLoading(false);
     }, [accountId]);
 
+    const reloadCurrentComponentsSilent = useCallback(async () => {
+        if (!accountId || !selectedFile || saving) return;
+        try {
+            const content = await data.read(accountId, "Components", selectedFile);
+            const { profile: normalized, migratedCount } = normalizeComponentProfile(content);
+            setProfile(normalized);
+            setMigratedLegacyCount(migratedCount);
+            setJsonText(JSON.stringify(normalized, null, 2));
+            setSelectedLineIdx((prev) =>
+                prev >= 0 && prev < normalized.Lines.length ? prev : 0,
+            );
+        } catch {
+            // Keep existing editor state on transient reload errors
+        }
+    }, [accountId, selectedFile, saving]);
+
     const loadFiles = useCallback(async () => {
         if (!accountId) {
             setLoading(false);
@@ -257,7 +274,7 @@ export default function ComponentsPage() {
         setSyncingPluginComponents(true);
         try {
             if (onlineExtendClients.length > 0) {
-                await Promise.all(
+                const dispatchResults = await Promise.all(
                     onlineExtendClients.map((c) =>
                         clients.sendExtendCommand(
                             accountId,
@@ -266,6 +283,37 @@ export default function ComponentsPage() {
                         ).catch(() => null)
                     )
                 );
+                const pendingGuids = new Set<string>();
+                for (const res of dispatchResults) {
+                    if (res && typeof res.request_guid === "string" && res.request_guid) {
+                        pendingGuids.add(res.request_guid);
+                    }
+                }
+                if (pendingGuids.size > 0) {
+                    await new Promise<void>((resolve) => {
+                        let done = false;
+                        let timer: ReturnType<typeof setTimeout> | null = null;
+                        let unsub = () => {};
+                        const finish = () => {
+                            if (done) return;
+                            done = true;
+                            if (timer) clearTimeout(timer);
+                            unsub();
+                            resolve();
+                        };
+                        unsub = realtime.subscribe(accountId, {
+                            onEvent: (evt) => {
+                                if (evt.event === "command.completed") {
+                                    const guid = String(evt.data?.request_guid || "").trim();
+                                    if (guid && pendingGuids.delete(guid) && pendingGuids.size === 0) {
+                                        finish();
+                                    }
+                                }
+                            },
+                        });
+                        timer = setTimeout(finish, 5000);
+                    });
+                }
             }
             await loadPluginComponentsCatalog();
             setMsg({ type: "success", text: "已刷新客户端上报的第三方组件清单" });
@@ -275,7 +323,7 @@ export default function ComponentsPage() {
         setSyncingPluginComponents(false);
     }
 
-    async function handleSave() {
+    async function handleSave(andSync: boolean = false) {
         if (!selectedFile) return;
         setSaving(true);
         setMsg(null);
@@ -292,9 +340,14 @@ export default function ComponentsPage() {
                 setProfile(normalized);
                 setJsonText(JSON.stringify(normalized, null, 2));
             }
-            await data.write(accountId, "Components", selectedFile, payloadToSave);
+            const res = await data.write(accountId, "Components", selectedFile, payloadToSave, andSync);
             setMigratedLegacyCount(0);
-            setMsg({ type: "success", text: "组件配置已保存并递增版本号" });
+            setMsg({
+                type: "success",
+                text: andSync
+                    ? `组件配置已保存并递增版本号，已向 ${res.sync?.notified_clients ?? 0}/${res.sync?.matched_clients ?? 0} 台在线客户端请求拉取更新`
+                    : "组件配置已保存并递增版本号",
+            });
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "保存失败，请检查 JSON 格式" });
         }
@@ -1381,7 +1434,19 @@ export default function ComponentsPage() {
                                 {jsonMode ? "可视化模式" : "源码模式"}
                             </Button>
                             <Button appearance="secondary" icon={<ArrowSync24Regular />} onClick={() => selectFile(selectedFile)}>刷新</Button>
-                            <Button appearance="primary" icon={<Save24Regular />} onClick={handleSave} disabled={saving}>
+                            <RemoteEditLauncherButton
+                                accountId={accountId}
+                                initialView="components"
+                                resourceType="Components"
+                                selectedFile={selectedFile}
+                                disabled={!selectedFile || saving}
+                                onMessage={setMsg}
+                                onRemoteUpdated={() => void reloadCurrentComponentsSilent()}
+                            />
+                            <Button appearance="secondary" icon={<ArrowSync24Regular />} onClick={() => handleSave(true)} disabled={saving}>
+                                {saving ? "保存中..." : "保存并更新"}
+                            </Button>
+                            <Button appearance="primary" icon={<Save24Regular />} onClick={() => handleSave(false)} disabled={saving}>
                                 {saving ? "保存中..." : "保存"}
                             </Button>
                         </>

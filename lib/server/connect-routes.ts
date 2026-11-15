@@ -85,9 +85,13 @@ import {
   listAuditLogs,
   clearAuditLogs,
   encodeClassIslandCredential,
+  createEditSessionFromConsole,
+  listEditSessions,
+  closeEditSessionFromConsole,
 } from "./db.ts";
 import type {
   ClientProfileConfig,
+  EditSessionCreateRequest,
   NotificationPayload,
   PreRegCreate,
   RegistrationMode,
@@ -237,7 +241,8 @@ export async function dispatchManagementAction(
       return writeResource(
         String(payload.resource_type),
         String(payload.name),
-        payload.body
+        payload.body,
+        { sync: Boolean(payload.sync) }
       );
     case "data.delete":
       return deleteResource(String(payload.resource_type), String(payload.name));
@@ -349,6 +354,14 @@ export async function dispatchManagementAction(
       return listClientConfigUploads(String(payload.client_uid));
     case "clients.getConfigUploadDetail":
       return getClientConfigUploadDetail(String(payload.request_guid));
+
+    // RemoteEdit & AssistAnother
+    case "editSession.create":
+      return await createEditSessionFromConsole(payload.body as EditSessionCreateRequest);
+    case "editSession.list":
+      return listEditSessions();
+    case "editSession.close":
+      return await closeEditSessionFromConsole(String(payload.session_id));
 
     // Audit
     case "audit.list":
