@@ -2712,6 +2712,29 @@ function normalizeMac(mac: string): string {
   return (mac || "").trim().toUpperCase().replace(/:/g, "-");
 }
 
+function createPendingPairingCode(
+  db: DatabaseSync,
+  clientUid: string,
+  clientId: string,
+  mac: string,
+  ip: string,
+  createdAt: string
+): string {
+  const alreadyIssued = db.prepare("SELECT 1 FROM pairing_codes WHERE client_uid = ? AND code = ?");
+  let code = String(crypto.randomInt(100000, 1000000));
+  while (alreadyIssued.get(clientUid, code)) {
+    code = String(crypto.randomInt(100000, 1000000));
+  }
+  db.prepare(`
+    INSERT INTO pairing_codes (
+      id, code, client_uid, client_id, client_mac, client_ip,
+      status, approved, used, preset_profile, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 0, '{}', ?)
+  `).run(crypto.randomUUID(), code, clientUid, clientId, mac, ip, createdAt);
+  publishSteEvent("pairing.updated", { client_uid: clientUid, code, status: "pending" });
+  return code;
+}
+
 export async function handleGrpcClientRegister(
   clientUid: string,
   clientId: string,
@@ -2865,24 +2888,17 @@ export async function handleGrpcClientRegister(
 
   // Pairing mode
   const existingCode = db
-    .prepare("SELECT * FROM pairing_codes WHERE client_uid = ? AND used = 0 ORDER BY created_at DESC LIMIT 1")
+    .prepare("SELECT * FROM pairing_codes WHERE client_uid = ? AND used = 0 AND status != 'rejected' ORDER BY created_at DESC, rowid DESC LIMIT 1")
     .get(clientUid) as
     | {
         id: string;
         code: string;
-        status: string;
+        client_id: string;
+        client_mac: string;
         approved: number;
         preset_profile: string;
       }
     | undefined;
-
-  if (existingCode && existingCode.status === "rejected") {
-    return {
-      retcode: 1001, // HandshakeClientRejected
-      message: `配对请求已被管理员拒绝 (配对码: ${existingCode.code})`,
-      serverPublicKey: "",
-    };
-  }
 
   if (existingCode && existingCode.approved) {
     db.prepare("UPDATE pairing_codes SET used = 1, status = 'used' WHERE id = ?").run(
@@ -2893,9 +2909,9 @@ export async function handleGrpcClientRegister(
       VALUES (?, ?, ?, ?, ?, 0, ?, ?)
     `).run(
       clientUid,
-      clientId,
-      clientId || "未命名设备",
-      clientMac,
+      clientId || existingCode.client_id,
+      clientId || existingCode.client_id || "未命名设备",
+      clientMac || existingCode.client_mac,
       clientIp,
       nowIso,
       nowIso
@@ -2925,36 +2941,19 @@ export async function handleGrpcClientRegister(
     };
   }
 
-  if (!existingCode) {
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    db.prepare(`
-      INSERT INTO pairing_codes (
-        id, code, client_uid, client_id, client_mac, client_ip,
-        status, approved, used, preset_profile, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 0, '{}', ?)
-    `).run(crypto.randomUUID(), code, clientUid, clientId, clientMac, clientIp, nowIso);
-    publishSteEvent("pairing.updated", {
-      client_uid: clientUid,
-      code,
-      status: "pending",
-    });
-    return {
-      retcode: 10003, // PairingRequired
-      message: `Device requires pairing code to join. Pairing Code: ${code}. Please contact admin for approval.`,
-      serverPublicKey: "",
-    };
-  } else {
+  const code = existingCode?.code ?? createPendingPairingCode(db, clientUid, clientId, clientMac, clientIp, nowIso);
+  if (existingCode) {
     db.prepare(`
       UPDATE pairing_codes
       SET client_id = ?, client_mac = ?, client_ip = ?
       WHERE id = ?
-    `).run(clientId, clientMac, clientIp, existingCode.id);
-    return {
-      retcode: 10003, // PairingRequired
-      message: `Device requires pairing code to join. Pairing Code: ${existingCode.code}. Please contact admin for approval.`,
-      serverPublicKey: "",
-    };
+    `).run(clientId || existingCode.client_id, clientMac || existingCode.client_mac, clientIp, existingCode.id);
   }
+  return {
+    retcode: 10003, // PairingRequired
+    message: `Device requires pairing code to join. Pairing Code: ${code}. Please contact admin for approval.`,
+    serverPublicKey: "",
+  };
 }
 
 export function isClientRegisteredInDb(clientUid: string): "registered" | "unregistered" | "disabled" {
@@ -3086,28 +3085,22 @@ export async function pollClientPairingStatus(
     };
   }
 
-  let pcRow = db
-    .prepare("SELECT * FROM pairing_codes WHERE client_uid = ? ORDER BY created_at DESC LIMIT 1")
-    .get(clientUid) as
-    | {
-        id: string;
-        code: string;
-        client_uid: string;
-        client_id: string;
-        client_mac: string;
-        client_ip: string;
-        status: string;
-        approved: number;
-        used: number;
-        preset_profile: string;
-      }
-    | undefined;
-
-  if (!pcRow && code.trim()) {
-    pcRow = db
-      .prepare("SELECT * FROM pairing_codes WHERE code = ? ORDER BY created_at DESC LIMIT 1")
-      .get(code.trim()) as typeof pcRow;
-  }
+  const requestedCode = code.trim();
+  const pairingRow = requestedCode
+    ? db.prepare("SELECT * FROM pairing_codes WHERE client_uid = ? AND code = ? AND used = 0 ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .get(clientUid, requestedCode)
+    : db.prepare("SELECT * FROM pairing_codes WHERE client_uid = ? AND used = 0 ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .get(clientUid);
+  const pcRow = pairingRow as {
+    id: string;
+    code: string;
+    client_id: string;
+    client_mac: string;
+    client_ip: string;
+    status: string;
+    approved: number;
+    preset_profile: string;
+  } | undefined;
 
   if (pcRow) {
     if (pcRow.status === "rejected") {
@@ -3123,7 +3116,7 @@ export async function pollClientPairingStatus(
         server_flavor: "miniclassisland-ste",
       };
     }
-    if (pcRow.approved || pcRow.status === "approved" || pcRow.used) {
+    if (pcRow.approved || pcRow.status === "approved") {
       const effectiveClassId = classId.trim() || pcRow.client_id || "";
       const effectiveMac = mac.trim() || pcRow.client_mac || "";
       const effectiveIp = clientIp || pcRow.client_ip || "127.0.0.1";
@@ -3184,19 +3177,8 @@ export async function pollClientPairingStatus(
   }
 
   const mode = getPairingStatus().registration_mode;
-  if (mode === "pairing") {
-    const newCode = String(Math.floor(100000 + Math.random() * 900000));
-    db.prepare(`
-      INSERT INTO pairing_codes (
-        id, code, client_uid, client_id, client_mac, client_ip,
-        status, approved, used, preset_profile, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 0, '{}', ?)
-    `).run(crypto.randomUUID(), newCode, clientUid, classId, mac, clientIp, nowIso);
-    publishSteEvent("pairing.updated", {
-      client_uid: clientUid,
-      code: newCode,
-      status: "pending",
-    });
+  if (mode === "pairing" && !requestedCode) {
+    const newCode = createPendingPairingCode(db, clientUid, classId, mac, clientIp, nowIso);
     return {
       status: "pending",
       approved: false,
