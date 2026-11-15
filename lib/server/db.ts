@@ -617,7 +617,15 @@ export function changeAdminPassword(oldPassword: string, newPassword: string): v
 // Single-Tenant Account & System Info
 // ============================================================================
 
-export function getTenantAccount(originFallback = "http://localhost:21196"): AccountOut & { server_url?: string } {
+function normalizeManagementServerUrl(url: string): string {
+  return url.trim()
+    .replace(/\/api\/v1\/client\/[^/?#]+\/manifest\/?(?:[?#].*)?$/i, "")
+    .replace(/\/+$/, "");
+}
+
+export function getTenantAccount(
+  originFallback = "http://localhost:21196"
+): AccountOut & Required<Pick<AccountOut, "server_url" | "urls">> {
   const db = getDb();
   const row = db
     .prepare(
@@ -631,7 +639,8 @@ export function getTenantAccount(originFallback = "http://localhost:21196"): Acc
     server_url: string;
     created_at: string;
   };
-  const baseUrl = (row.server_url || originFallback).replace(/\/+$/, "");
+  const serverUrl = normalizeManagementServerUrl(row.server_url);
+  const baseUrl = serverUrl || normalizeManagementServerUrl(originFallback);
   return {
     id: SINGLE_ACCOUNT_ID,
     name: row.name,
@@ -640,7 +649,7 @@ export function getTenantAccount(originFallback = "http://localhost:21196"): Acc
     registration_mode: row.registration_mode || "pairing",
     is_active: true,
     created_at: row.created_at,
-    server_url: row.server_url || "",
+    server_url: serverUrl,
     urls: {
       grpc: baseUrl,
       manifest_template: `${baseUrl}/api/v1/client/{client_uid}/manifest`,
@@ -671,7 +680,7 @@ export function updateTenantAccount(
   const nextName = data.name !== undefined ? data.name.trim() || current.name : current.name;
   const nextSlug = data.slug !== undefined ? data.slug.trim() || current.slug : current.slug;
   const nextMode = data.registration_mode !== undefined ? data.registration_mode : current.registration_mode;
-  const nextUrl = data.server_url !== undefined ? data.server_url.trim() : current.server_url;
+  const nextUrl = normalizeManagementServerUrl(data.server_url ?? current.server_url);
 
   db.prepare(`
     UPDATE system_config
@@ -696,8 +705,8 @@ export function buildManagementPreset(
   classIdentity?: string,
   originFallback = "http://localhost:21196"
 ): Record<string, unknown> {
-  const acct = getTenantAccount(originFallback);
-  const baseUrl = (acct.server_url || originFallback).replace(/\/+$/, "");
+  const { urls } = getTenantAccount(originFallback);
+  const baseUrl = urls.grpc;
   return {
     IsManagementEnabled: true,
     ManagementServerKind: 1,
@@ -2628,6 +2637,7 @@ export function buildClientManifest(
 
   const response: Record<string, unknown> = {
     ServerKind: 1,
+    CoreVersion: "2.0.0.0",
     ServerFlavor: "miniclassisland-ste",
     ServerSoftware: "MINI ClassIsland STE",
     MiniClassIsland: true,
