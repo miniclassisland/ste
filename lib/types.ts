@@ -1117,7 +1117,7 @@ export interface ComponentLineSettings {
     IslandSeparationMode?: number;
     IsMainLine?: boolean;
     IsNotificationEnabled?: boolean;
-    IsEnabled?: boolean;
+    IsVisible?: boolean;
     HideOnRule?: boolean;
     HidingRules?: unknown;
     IsResourceOverridingEnabled?: boolean;
@@ -1143,6 +1143,9 @@ export interface ComponentProfile {
 
 /** 旧版前端曾误用的假 GUID 到真实上游 ClassIsland 组件 GUID 的自动迁移映射表 */
 export const LEGACY_COMPONENT_GUID_MAP: Record<string, string> = {
+    "df308295-21f6-482e-bada-fa0e5f14bb66": "df3f8295-21f6-482e-bada-fa0e5f14bb66",
+    "1db2017d-e374-4bc6-9d57-0b4ffdbef9f1": "9e1af71d-8f77-4b21-a342-448787104dd9",
+    "7789b694-619f-4779-89a9-c5a81c45618b": "1db2017d-e374-4bc6-9d57-0b4adf03a6b8",
     "df398495-e1f4-4e4e-b62c-512000e55029": "1db2017d-e374-4bc6-9d57-0b4adf03a6b8", // 课程表
     "9781b66c-647c-463b-bd42-8879901c2d08": "9e1af71d-8f77-4b21-a342-448787104dd9", // 时钟
     "c01377d5-9072-4c72-975a-c71b161b61d0": "df3f8295-21f6-482e-bada-fa0e5f14bb66", // 日期

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { data, clients, realtime } from "@/lib/api";
 import { useAccount } from "@/lib/account-context";
 import type {
@@ -10,7 +10,6 @@ import type {
     HorizontalAlignmentType,
     BuiltinComponentMeta,
     PluginComponentItem,
-    ClientDeviceOut,
 } from "@/lib/types";
 import {
     HORIZONTAL_ALIGNMENT_LABELS,
@@ -53,13 +52,10 @@ function findBuiltinMeta(id?: string): BuiltinComponentMeta | undefined {
     return BUILTIN_COMPONENTS.find((c) => c.id.toLowerCase() === mapped);
 }
 
-/** 判断组件是否为容器组件 */
-function isContainerComponent(item?: ComponentSettingsItem | null): boolean {
-    if (!item) return false;
-    const meta = findBuiltinMeta(item.Id);
-    if (meta?.isContainer) return true;
-    const settingsObj = item.Settings as Record<string, unknown> | undefined;
-    return !!(settingsObj && typeof settingsObj === "object" && Array.isArray(settingsObj.Children));
+function componentCatalogKey(id?: string): string {
+    const key = id?.trim().toLowerCase() || "";
+    const compact = key.replace(/^\{(.*)\}$/, "$1").replace(/-/g, "");
+    return /^[0-9a-f]{32}$/.test(compact) ? compact : key;
 }
 
 /** 递归迁移旧版错误 GUID 并补齐容器默认结构 */
@@ -81,7 +77,7 @@ function migrateComponentItems(items: ComponentSettingsItem[]): { items: Compone
                 if (meta.defaultSettings) {
                     item.Settings = JSON.parse(JSON.stringify(meta.defaultSettings));
                 }
-            } else if (typeof item.Settings === "object" && meta.defaultSettings) {
+            } else if (typeof item.Settings === "object" && !Array.isArray(item.Settings) && meta.defaultSettings) {
                 item.Settings = {
                     ...JSON.parse(JSON.stringify(meta.defaultSettings)),
                     ...(item.Settings as Record<string, unknown>),
@@ -89,7 +85,7 @@ function migrateComponentItems(items: ComponentSettingsItem[]): { items: Compone
             }
         }
         // 递归处理容器子组件
-        if (item.Settings && typeof item.Settings === "object") {
+        if (item.Settings && typeof item.Settings === "object" && !Array.isArray(item.Settings)) {
             const sObj = { ...(item.Settings as Record<string, unknown>) };
             if (Array.isArray(sObj.Children)) {
                 const sub = migrateComponentItems(sObj.Children as ComponentSettingsItem[]);
@@ -112,18 +108,18 @@ function normalizeComponentProfile(raw: unknown): { profile: ComponentProfile; m
         IslandSeparationMode: 0,
         IsMainLine: true,
         IsNotificationEnabled: true,
-        IsEnabled: true,
+        IsVisible: true,
     };
     if (!raw || typeof raw !== "object") {
         return { profile: { Lines: [defaultLine] }, migratedCount: 0 };
     }
     let rawLines: Array<Record<string, unknown>> = [];
     if (Array.isArray(raw)) {
-        const hasChildren = raw.length > 0 && raw[0] && typeof raw[0] === "object" && "Children" in raw[0];
+        const hasChildren = raw.length > 0 && raw[0] && typeof raw[0] === "object" && ("Children" in raw[0] || "Components" in raw[0]);
         if (hasChildren) {
             rawLines = raw as Array<Record<string, unknown>>;
         } else {
-            rawLines = [{ Children: raw, IslandSeparationMode: 0, IsMainLine: true, IsNotificationEnabled: true, IsEnabled: true }];
+            rawLines = [{ Children: raw, IslandSeparationMode: 0, IsMainLine: true, IsNotificationEnabled: true, IsVisible: true }];
         }
     } else {
         const obj = raw as Record<string, unknown>;
@@ -137,17 +133,19 @@ function normalizeComponentProfile(raw: unknown): { profile: ComponentProfile; m
 
     let totalMigrated = 0;
     const lines: ComponentLineSettings[] = rawLines.map((line, i) => {
-        const rawChildren = Array.isArray(line.Children) ? (line.Children as ComponentSettingsItem[]) : [];
+        const { Components: legacyChildren, IsEnabled: legacyVisibility, ...settings } = line || {};
+        const children = settings.Children ?? legacyChildren;
+        const rawChildren = Array.isArray(children) ? (children as ComponentSettingsItem[]) : [];
         const migrated = migrateComponentItems(rawChildren);
         totalMigrated += migrated.migratedCount;
         return {
-            ...(line as unknown as ComponentLineSettings),
+            ...(settings as unknown as ComponentLineSettings),
             Children: migrated.items,
-            IslandSeparationMode: typeof line.IslandSeparationMode === "number" ? line.IslandSeparationMode : 0,
-            IsMainLine: typeof line.IsMainLine === "boolean" ? line.IsMainLine : i === 0,
-            IsNotificationEnabled: typeof line.IsNotificationEnabled === "boolean" ? line.IsNotificationEnabled : i === 0,
-            IsEnabled: typeof line.IsEnabled === "boolean" ? line.IsEnabled : true,
-            HideOnRule: !!line.HideOnRule,
+            IslandSeparationMode: typeof settings.IslandSeparationMode === "number" ? settings.IslandSeparationMode : 0,
+            IsMainLine: typeof settings.IsMainLine === "boolean" ? settings.IsMainLine : i === 0,
+            IsNotificationEnabled: typeof settings.IsNotificationEnabled === "boolean" ? settings.IsNotificationEnabled : i === 0,
+            IsVisible: typeof settings.IsVisible === "boolean" ? settings.IsVisible : legacyVisibility !== false,
+            HideOnRule: !!settings.HideOnRule,
         };
     });
 
@@ -163,7 +161,7 @@ export default function ComponentsPage() {
     const [fileList, setFileList] = useState<string[]>([]);
     const [selectedFile, setSelectedFile] = useState<string | null>(null);
     const [profile, setProfile] = useState<ComponentProfile>({
-        Lines: [{ Children: [], IslandSeparationMode: 0, IsMainLine: true, IsNotificationEnabled: true, IsEnabled: true }],
+        Lines: [{ Children: [], IslandSeparationMode: 0, IsMainLine: true, IsNotificationEnabled: true, IsVisible: true }],
     });
     const [selectedLineIdx, setSelectedLineIdx] = useState<number>(0);
     const [selectedCompIdx, setSelectedCompIdx] = useState<number>(-1);
@@ -175,9 +173,14 @@ export default function ComponentsPage() {
     const [jsonMode, setJsonMode] = useState(false);
     const [jsonText, setJsonText] = useState("{}");
     const [customAddGuid, setCustomAddGuid] = useState("");
+    const [settingsDraft, setSettingsDraft] = useState<{
+        selection: string;
+        source: string;
+        value: string;
+        invalid: boolean;
+    } | null>(null);
     const [customAddName, setCustomAddName] = useState("");
     const [pluginComponents, setPluginComponents] = useState<PluginComponentItem[]>([]);
-    const [onlineExtendClients, setOnlineExtendClients] = useState<ClientDeviceOut[]>([]);
     const [syncingPluginComponents, setSyncingPluginComponents] = useState(false);
 
     const [loading, setLoading] = useState(true);
@@ -249,82 +252,90 @@ export default function ComponentsPage() {
 
     const loadPluginComponentsCatalog = useCallback(async () => {
         if (!accountId) return;
-        try {
-            const [res, devList] = await Promise.all([
-                clients.getPluginComponents(accountId).catch(() => ({ components: [] as PluginComponentItem[] })),
-                clients.list(accountId).catch(() => [] as ClientDeviceOut[]),
-            ]);
-            setPluginComponents(Array.isArray(res?.components) ? res.components : []);
-            const onlineExt = (Array.isArray(devList) ? devList : []).filter(
-                (d) => d.status === "online" && d.extend_management_enabled
-            );
-            setOnlineExtendClients(onlineExt);
-        } catch {
-            setPluginComponents([]);
-        }
+        const catalog = await clients.getPluginComponents(accountId);
+        setPluginComponents(catalog.components);
     }, [accountId]);
 
     useEffect(() => {
         loadFiles();
-        loadPluginComponentsCatalog();
+        void loadPluginComponentsCatalog().catch((error: unknown) => {
+            setMsg({ type: "error", text: error instanceof Error ? error.message : "读取组件库失败" });
+        });
     }, [loadFiles, loadPluginComponentsCatalog]);
 
     async function handleSyncPluginComponentsFromClient() {
         if (!accountId) return;
         setSyncingPluginComponents(true);
         try {
-            if (onlineExtendClients.length > 0) {
-                const dispatchResults = await Promise.all(
-                    onlineExtendClients.map((c) =>
-                        clients.sendExtendCommand(
-                            accountId,
-                            c.uid,
-                            "plugin.list_components"
-                        ).catch(() => null)
-                    )
-                );
-                const pendingGuids = new Set<string>();
-                for (const res of dispatchResults) {
-                    if (res && typeof res.request_guid === "string" && res.request_guid) {
-                        pendingGuids.add(res.request_guid);
-                    }
-                }
-                if (pendingGuids.size > 0) {
-                    await new Promise<void>((resolve) => {
-                        let done = false;
-                        let timer: ReturnType<typeof setTimeout> | null = null;
-                        let unsub = () => {};
-                        const finish = () => {
-                            if (done) return;
-                            done = true;
-                            if (timer) clearTimeout(timer);
-                            unsub();
-                            resolve();
-                        };
-                        unsub = realtime.subscribe(accountId, {
-                            onEvent: (evt) => {
-                                if (evt.event === "command.completed") {
-                                    const guid = String(evt.data?.request_guid || "").trim();
-                                    if (guid && pendingGuids.delete(guid) && pendingGuids.size === 0) {
-                                        finish();
-                                    }
-                                }
-                            },
-                        });
-                        timer = setTimeout(finish, 5000);
-                    });
-                }
+            const devices = (await clients.list(accountId)).filter(
+                (client) => client.status === "online" && client.extend_management_enabled,
+            );
+            if (!devices.length) {
+                await loadPluginComponentsCatalog();
+                setMsg({ type: "error", text: "暂无在线的增强终端，已读取现有组件库" });
+                return;
             }
+
+            const sent = await Promise.allSettled(devices.map((client) =>
+                clients.sendExtendCommand(accountId, client.uid, "plugin.list_components"),
+            ));
+            const requestGuids = sent.flatMap((result) =>
+                result.status === "fulfilled" && result.value.request_guid ? [result.value.request_guid] : [],
+            );
+            if (!requestGuids.length) throw new Error("组件清单请求发送失败");
+
+            const pending = new Set(requestGuids);
+            await new Promise<void>((resolve) => {
+                const finish = () => {
+                    clearTimeout(timer);
+                    unsubscribe();
+                    resolve();
+                };
+                const unsubscribe = realtime.subscribe(accountId, {
+                    onEvent: (event) => {
+                        if (event.event === "command.completed" && pending.delete(String(event.data?.request_guid))
+                            && pending.size === 0) {
+                            finish();
+                        }
+                    },
+                });
+                const timer = setTimeout(finish, 5000);
+            });
+
+            const uploads = await Promise.allSettled(
+                requestGuids.map((guid) => clients.getConfigUploadDetail(accountId, guid)),
+            );
+            const received = uploads.filter((result) => {
+                if (result.status !== "fulfilled" || result.value.status !== "completed") return false;
+                const payload = result.value.parsed_payload as {
+                    success?: boolean;
+                    data?: unknown;
+                } | null;
+                if (!payload || payload.success === false) return false;
+                const catalog = payload.data as { components?: unknown } | null;
+                return Array.isArray(catalog) || Array.isArray(catalog?.components);
+            }).length;
+
             await loadPluginComponentsCatalog();
-            setMsg({ type: "success", text: "已刷新客户端上报的第三方组件清单" });
+            setMsg({
+                type: received > 0 ? "success" : "error",
+                text: received > 0
+                    ? `已收到 ${received}/${devices.length} 台增强终端的组件清单`
+                    : "尚未收到增强终端返回的组件清单",
+            });
         } catch (err: unknown) {
             setMsg({ type: "error", text: err instanceof Error ? err.message : "获取组件清单失败" });
+        } finally {
+            setSyncingPluginComponents(false);
         }
-        setSyncingPluginComponents(false);
     }
 
     async function handleSave(andSync: boolean = false) {
         if (!selectedFile) return;
+        if (!jsonMode && currentSettingsDraft?.invalid) {
+            setMsg({ type: "error", text: "请先修正组件设置中的 JSON 格式" });
+            return;
+        }
         setSaving(true);
         setMsg(null);
         try {
@@ -436,6 +447,32 @@ export default function ComponentsPage() {
             ? activeChildren[selectedCompIdx]
             : undefined;
     const currentCompMeta = findBuiltinMeta(currentComp?.Id);
+    const settingsSelection = JSON.stringify([selectedFile, selectedLineIdx, ...containerStack.map((entry) => entry.indexInParent), selectedCompIdx]);
+    const settingsSource = JSON.stringify(currentComp?.Settings, null, 2) ?? "";
+    const currentSettingsDraft = settingsDraft?.selection === settingsSelection && settingsDraft.source === settingsSource
+        ? settingsDraft
+        : null;
+    const pluginComponentsById = useMemo(
+        () => new Map(pluginComponents.map((component) => [componentCatalogKey(component.id), component])),
+        [pluginComponents],
+    );
+
+    function getComponentName(comp: ComponentSettingsItem, fallback: string): string {
+        const cachedName = comp.NameCache?.trim();
+        if (cachedName && cachedName !== "未知组件") return cachedName;
+        return findBuiltinMeta(comp.Id)?.name
+            || pluginComponentsById.get(componentCatalogKey(comp.Id))?.name
+            || fallback;
+    }
+
+    function isContainerComponent(comp: ComponentSettingsItem): boolean {
+        if (findBuiltinMeta(comp.Id)?.isContainer
+            || pluginComponentsById.get(componentCatalogKey(comp.Id))?.isComponentContainer) {
+            return true;
+        }
+        const settings = comp.Settings as Record<string, unknown> | undefined;
+        return !!settings && typeof settings === "object" && Array.isArray(settings.Children);
+    }
 
     // ── 行操作 (与上游 ComponentsSettingsPage 顶栏行操作对齐) ──
     function addLineBelow(afterIdx: number = lines.length - 1) {
@@ -445,7 +482,7 @@ export default function ComponentsPage() {
             IslandSeparationMode: 0,
             IsMainLine: lines.length === 0,
             IsNotificationEnabled: lines.length === 0,
-            IsEnabled: true,
+            IsVisible: true,
             HideOnRule: false,
         };
         setProfile((prev) => {
@@ -514,9 +551,12 @@ export default function ComponentsPage() {
     // ── 组件与容器操作 ──
     function addComponent(id: string, name: string) {
         const meta = findBuiltinMeta(id);
+        const plugin = pluginComponentsById.get(componentCatalogKey(id));
         const defaultSettings = meta?.defaultSettings
             ? JSON.parse(JSON.stringify(meta.defaultSettings))
-            : undefined;
+            : plugin?.isComponentContainer
+                ? { Children: [] }
+                : undefined;
         const newComp: ComponentSettingsItem = {
             Id: meta?.id || id,
             NameCache: meta?.name || name,
@@ -588,18 +628,20 @@ export default function ComponentsPage() {
         setSelectedCompIdx(target);
     }
 
-    function openContainerChildren(idx: number) {
-        const comp = activeChildren[idx];
+    function openContainerChildren(idx: number, rootLineIdx?: number) {
+        const comp = rootLineIdx === undefined ? activeChildren[idx] : lines[rootLineIdx]?.Children?.[idx];
         if (!comp || !isContainerComponent(comp)) return;
-        const meta = findBuiltinMeta(comp.Id);
-        setContainerStack((prev) => [
-            ...prev,
-            {
-                indexInParent: idx,
-                title: comp.NameCache || meta?.name || "容器组件",
-                id: comp.Id || "",
-            },
-        ]);
+        const entry = {
+            indexInParent: idx,
+            title: getComponentName(comp, "容器组件"),
+            id: comp.Id || "",
+        };
+        if (rootLineIdx === undefined) {
+            setContainerStack((prev) => [...prev, entry]);
+        } else {
+            setSelectedLineIdx(rootLineIdx);
+            setContainerStack([entry]);
+        }
         const sObj = (comp.Settings && typeof comp.Settings === "object") ? (comp.Settings as Record<string, unknown>) : {};
         const subChildren = Array.isArray(sObj.Children) ? sObj.Children : [];
         setSelectedCompIdx(subChildren.length > 0 ? 0 : -1);
@@ -1352,23 +1394,38 @@ export default function ComponentsPage() {
             );
         }
 
+        const plugin = pluginComponentsById.get(componentCatalogKey(comp.Id));
         // 无独立设置项的内置组件（日期、分割线、分组容器、堆叠容器）或第三方插件组件
         return (
             <div className="card" style={{ padding: 16, marginBottom: 0, display: "flex", flexDirection: "column", gap: 10 }}>
                 <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
                     {meta && !meta.hasSettings
                         ? `“${meta.name}”组件没有专属功能设置项，可在高级设置标签页配置外观、字体与边距。`
-                        : "第三方插件组件设置："}
+                        : plugin
+                            ? getComponentName(comp, plugin.id)
+                            : "组件设置（JSON）"}
                 </div>
                 <Textarea
                     rows={5}
-                    value={comp.Settings ? JSON.stringify(comp.Settings, null, 2) : ""}
+                    value={currentSettingsDraft?.value ?? settingsSource}
+                    aria-invalid={currentSettingsDraft?.invalid || undefined}
                     onChange={(_, d) => {
                         try {
                             const parsed = d.value.trim() ? JSON.parse(d.value) : undefined;
+                            setSettingsDraft({
+                                selection: settingsSelection,
+                                source: JSON.stringify(parsed, null, 2) ?? "",
+                                value: d.value,
+                                invalid: false,
+                            });
                             updateCurrentComp({ Settings: parsed });
                         } catch {
-                            // 允许正在输入中的半成品 JSON
+                            setSettingsDraft({
+                                selection: settingsSelection,
+                                source: settingsSource,
+                                value: d.value,
+                                invalid: true,
+                            });
                         }
                     }}
                     placeholder="输入组件设置内容"
@@ -1575,7 +1632,7 @@ export default function ComponentsPage() {
                                                 <div style={{ minWidth: 112, display: "flex", flexDirection: "column", gap: 4 }}>
                                                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                                                         <span style={{ fontWeight: 600, fontSize: 13 }}>第 {lIdx + 1} 行</span>
-                                                        {line.IsEnabled === false && (
+                                                        {line.IsVisible === false && (
                                                             <span className="badge badge-danger" style={{ fontSize: 10, padding: "1px 6px" }}>
                                                                 已禁用
                                                             </span>
@@ -1615,7 +1672,6 @@ export default function ComponentsPage() {
                                                         </span>
                                                     ) : (
                                                         (line.Children || []).map((comp, cIdx) => {
-                                                            const meta = findBuiltinMeta(comp.Id);
                                                             const isContainer = isContainerComponent(comp);
                                                             const isCompActive = isLineSelected && containerStack.length === 0 && selectedCompIdx === cIdx;
                                                             const isContainerOpen = isLineSelected && containerStack[0]?.indexInParent === cIdx;
@@ -1633,11 +1689,7 @@ export default function ComponentsPage() {
                                                                     }}
                                                                     onDoubleClick={(e) => {
                                                                         e.stopPropagation();
-                                                                        if (isContainer) {
-                                                                            setSelectedLineIdx(lIdx);
-                                                                            setContainerStack([]);
-                                                                            setTimeout(() => openContainerChildren(cIdx), 0);
-                                                                        }
+                                                                        if (isContainer) openContainerChildren(cIdx, lIdx);
                                                                     }}
                                                                     style={{
                                                                         display: "inline-flex",
@@ -1661,14 +1713,12 @@ export default function ComponentsPage() {
                                                                     }}
                                                                     title={isContainer ? "单击选中，双击展开容器子组件" : comp.Id}
                                                                 >
-                                                                    <span>{comp.NameCache || meta?.name || "未知组件"}</span>
+                                                                    <span>{getComponentName(comp, "未知组件")}</span>
                                                                     {isContainer && (
                                                                         <span
                                                                             onClick={(e) => {
                                                                                 e.stopPropagation();
-                                                                                setSelectedLineIdx(lIdx);
-                                                                                setContainerStack([]);
-                                                                                setTimeout(() => openContainerChildren(cIdx), 0);
+                                                                                openContainerChildren(cIdx, lIdx);
                                                                             }}
                                                                             style={{
                                                                                 display: "inline-flex",
@@ -1763,7 +1813,6 @@ export default function ComponentsPage() {
                                             </span>
                                         ) : (
                                             activeChildren.map((comp, cIdx) => {
-                                                const meta = findBuiltinMeta(comp.Id);
                                                 const isContainer = isContainerComponent(comp);
                                                 const isSelected = selectedCompIdx === cIdx;
                                                 return (
@@ -1785,7 +1834,7 @@ export default function ComponentsPage() {
                                                             cursor: "pointer",
                                                         }}
                                                     >
-                                                        <span>{comp.NameCache || meta?.name || "子组件"}</span>
+                                                        <span>{getComponentName(comp, "未知组件")}</span>
                                                         {isContainer && <Box16Regular style={{ width: 13, height: 13 }} />}
                                                     </div>
                                                 );
@@ -1800,7 +1849,7 @@ export default function ComponentsPage() {
                                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                                     <span style={{ fontSize: 13, fontWeight: 600 }}>
                                         {currentComp
-                                            ? `当前选中：${currentComp.NameCache || currentCompMeta?.name || "组件"} · ${containerStack.length > 0 ? `${containerStack[containerStack.length - 1].title} 内部` : `第 ${selectedLineIdx + 1} 行`} #${selectedCompIdx + 1}`
+                                            ? `当前选中：${getComponentName(currentComp, "未知组件")} · ${containerStack.length > 0 ? `${containerStack[containerStack.length - 1].title} 内部` : `第 ${selectedLineIdx + 1} 行`} #${selectedCompIdx + 1}`
                                             : `当前作用域：${containerStack.length > 0 ? `容器「${containerStack[containerStack.length - 1].title}」` : `第 ${selectedLineIdx + 1} 行`} · 未选中组件`}
                                     </span>
                                 </div>
@@ -2358,8 +2407,8 @@ export default function ComponentsPage() {
                                                 <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>关闭后主界面将不显示该行</div>
                                             </div>
                                             <Switch
-                                                checked={currentLine.IsEnabled !== false}
-                                                onChange={(_, d) => updateCurrentLine({ IsEnabled: d.checked })}
+                                                checked={currentLine.IsVisible !== false}
+                                                onChange={(_, d) => updateCurrentLine({ IsVisible: d.checked })}
                                             />
                                         </div>
                                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
