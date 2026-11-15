@@ -2984,13 +2984,8 @@ export function authorizeClientUnregister(
   }
 
   const sessionToken = (options.sessionToken || "").trim();
-  if (sessionToken) {
-    const sessionRow = db
-      .prepare("SELECT client_uid FROM client_sessions WHERE session_token = ?")
-      .get(sessionToken) as { client_uid: string } | undefined;
-    if (sessionRow && sessionRow.client_uid === clientUid) {
-      return { exists: true };
-    }
+  if (verifyGrpcSession(clientUid, sessionToken)) {
+    return { exists: true };
   }
 
   const reqIp = (options.clientIp || "").trim();
