@@ -1,7 +1,6 @@
 import net from "node:net";
 import http from "node:http";
 import http2 from "node:http2";
-import { parse } from "node:url";
 import next from "next";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 
@@ -21,8 +20,11 @@ async function main() {
   const connectHandler = connectNodeAdapter({
     routes: registerConnectRoutes,
     fallback: (req, res) => {
-      const parsedUrl = parse(req.url || "/", true);
-      handleNext(req, res, parsedUrl);
+      if (req.httpVersionMajor === 2) {
+        res.writeHead(404).end();
+        return;
+      }
+      handleNext(req, res);
     },
   });
 
@@ -44,8 +46,7 @@ async function main() {
       connectHandler(req, res);
       return;
     }
-    const parsedUrl = parse(req.url || "/", true);
-    handleNext(req, res, parsedUrl);
+    handleNext(req, res);
   });
 
   const upgradeHandler = app.getUpgradeHandler();

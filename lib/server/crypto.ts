@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { fromBinary } from "@bufbuild/protobuf";
+import { LEGACY_COMPONENT_GUID_MAP } from "../types.ts";
 import {
   AuditEvents,
   AuthorizeEventSchema,
@@ -83,6 +84,23 @@ export function verifyAdminPassword(password: string, storedHash: string): boole
   return crypto.timingSafeEqual(derived, keyBuf);
 }
 
+function normalizeComponentItems(items: unknown[]): unknown[] {
+  return items.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+    const component = { ...(item as Record<string, unknown>) };
+    if (typeof component.Id === "string") {
+      component.Id = LEGACY_COMPONENT_GUID_MAP[component.Id.trim().toLowerCase()] ?? component.Id;
+    }
+    if (component.Settings && typeof component.Settings === "object" && !Array.isArray(component.Settings)) {
+      const settings = component.Settings as Record<string, unknown>;
+      if (Array.isArray(settings.Children)) {
+        component.Settings = { ...settings, Children: normalizeComponentItems(settings.Children) };
+      }
+    }
+    return component;
+  });
+}
+
 /**
  * Normalize resource payload for upstream ClassIsland compatibility
  */
@@ -91,6 +109,20 @@ export function normalizeResourcePayload(resourceType: string, data: unknown): u
     return data;
   }
   const rawObj = data as Record<string, unknown>;
+
+  if (resourceType === "Components" && Array.isArray(rawObj.Lines)) {
+    const lines = rawObj.Lines.map((line) => {
+      if (!line || typeof line !== "object" || Array.isArray(line)) return line;
+      const { Components, IsEnabled, ...settings } = line as Record<string, unknown>;
+      const children = Array.isArray(settings.Children) ? settings.Children : Components;
+      return {
+        ...settings,
+        Children: Array.isArray(children) ? normalizeComponentItems(children) : [],
+        IsVisible: typeof settings.IsVisible === "boolean" ? settings.IsVisible : IsEnabled !== false,
+      };
+    });
+    return { ...rawObj, Lines: lines };
+  }
 
   if (resourceType === "Credentials") {
     const out = { ...rawObj };
@@ -383,24 +415,25 @@ export const DEFAULT_RESOURCES: Record<string, unknown> = {
   Components: {
     Lines: [
       {
-        Components: [
+        Children: [
           {
-            Id: "df308295-21F6-482e-bada-fa0e5f14bb66",
+            Id: "df3f8295-21f6-482e-bada-fa0e5f14bb66",
             NameCache: "日期",
             HideOnRule: false,
           },
           {
-            Id: "1db2017d-e374-4bc6-9d57-0b4ffdbef9f1",
+            Id: "9e1af71d-8f77-4b21-a342-448787104dd9",
             NameCache: "时钟",
             HideOnRule: false,
           },
           {
-            Id: "7789b694-619f-4779-89a9-c5a81c45618b",
+            Id: "1db2017d-e374-4bc6-9d57-0b4adf03a6b8",
             NameCache: "课程表",
             HideOnRule: false,
           },
         ],
         IsMainLine: true,
+        IsVisible: true,
         IsNotificationEnabled: true,
         HorizontalAlignment: 1,
       },
